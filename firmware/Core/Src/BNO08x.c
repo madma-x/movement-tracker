@@ -7,6 +7,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 
 #ifndef MODIFIED_SHTP_SH2
 #error Modification to file required ! sh2.c -> executableDeviceHdlr -> add "sh2AsyncEvent.shtpEvent = payload[1];" below "sh2AsyncEvent.eventId = SH2_RESET;" in the "EXECUTABLE_DEVICE_RESP_RESET_COMPLETE" case
@@ -294,5 +295,43 @@ bool bnoEnableReportInterval(sh2_SensorId_t sensorId, uint32_t interval_us) {
 }
 bool bnoEnableReport(sh2_SensorId_t sensorId) {
 	return bnoEnableReportInterval(sensorId, 10000);
+}
+
+/**
+ * @brief Convert a rotation-vector quaternion (from sh2_SensorValue_t) to yaw (radians).
+ *
+ * Uses the quaternion-to-yaw conversion (Z axis rotation):
+ *   yaw = atan2(2*(w*z + x*y), 1 - 2*(y*y + z*z))
+ * The quaternion is normalized before conversion.
+ *
+ * @param value Pointer to a populated sh2_SensorValue_t whose .un.rotationVector fields are valid
+ * @return yaw angle in radians
+ */
+float bnoRotationVectorToYaw(const sh2_SensorValue_t *value){
+	if(value == NULL) return 0.0f;
+	float w = value->un.rotationVector.real;
+	float x = value->un.rotationVector.i;
+	float y = value->un.rotationVector.j;
+	float z = value->un.rotationVector.k;
+
+	float norm = sqrtf(w*w + x*x + y*y + z*z);
+	if(norm == 0.0f) return 0.0f;
+	w /= norm; x /= norm; y /= norm; z /= norm;
+
+	float t3 = 2.0f * (w * z + x * y);
+	float t4 = 1.0f - 2.0f * (y * y + z * z);
+	return atan2f(t3, t4);
+}
+
+/**
+ * @brief Normalize angle to (-PI, PI]
+ *
+ * @param a angle in radians
+ * @return normalized angle in radians
+ */
+float bnoNormalizeAngle(float a){
+    while (a > M_PI) a -= 2.0f * M_PI;
+    while (a <= -M_PI) a += 2.0f * M_PI;
+    return a;
 }
 

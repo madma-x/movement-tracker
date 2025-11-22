@@ -309,11 +309,11 @@ void paaReadMotion(paa5163_t* p){
 		dy8[0] = _paaRead(p, delta_y_l);
 		dy8[1] = _paaRead(p, delta_y_h);
 
-		p->x_cpi += p->dx_cpi;
-		p->y_cpi += p->dy_cpi;
+		// p->x_cpi += p->dx_cpi;
+		// p->y_cpi += p->dy_cpi;
 
-		p->x = ((float) p->x_cpi * (float) IN_TO_MM) / (float) p->resolution;
-		p->y = ((float) p->y_cpi * (float) IN_TO_MM) / (float) p->resolution;
+		p->dx = ((float) p->dx_cpi * (float) IN_TO_MM) / (float) p->resolution;
+		p->dy = ((float) p->dy_cpi * (float) IN_TO_MM) / (float) p->resolution;
 
 		// printf("paa : dx %d, dy %d, xcpi %ld, ycpi %ld, x %.3f, y %.3f\n", p->dx_cpi, p->dy_cpi, p->x_cpi, p->y_cpi, p->x, p->y);
 		printf("paa : x %.3f\ty %.3f\n", p->x, p->y);

@@ -57,4 +57,10 @@ sh2_ProductIds_t* bnoGetProdIds();
 bool bnoEnableReportInterval(sh2_SensorId_t sensorId, uint32_t interval_us);
 bool bnoEnableReport(sh2_SensorId_t sensorId);
 
+// Convert a rotation-vector quaternion contained in a sensor value to yaw (radians)
+float bnoRotationVectorToYaw(const sh2_SensorValue_t *value);
+
+// Normalize an angle (radians) into the range (-PI, PI]
+float bnoNormalizeAngle(float a);
+
 #endif /* INC_BNO08X_H_ */

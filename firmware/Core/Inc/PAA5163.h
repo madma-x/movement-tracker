@@ -44,8 +44,8 @@ typedef struct {
 	int32_t x_cpi; // sum of all readings
 	int32_t y_cpi;
 
-	float x; // counts per mm (sum of all readings)
-	float y;
+	float dx; // counts per mm (sum of all readings)
+	float dy;
 
 	bool initialized;
 } paa5163_t;
