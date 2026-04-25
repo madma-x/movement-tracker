@@ -1,0 +1,47 @@
+# macOS / editor
+.DS_Store
+.metadata/
+*.log
+*.tmp
+*.bak
+*~
+
+# Lock and temp artifacts
+*.lck
+*.lock
+
+# STM32 / embedded build outputs
+**/Debug/
+**/Release/
+**/*.o
+**/*.d
+**/*.su
+**/*.cyclo
+**/*.map
+**/*.list
+**/*.elf
+**/*.hex
+**/*.bin
+
+# Tool-generated dependency and intermediate files
+**/objects.list
+**/objects.mk
+**/sources.mk
+
+# KiCad generated outputs (keep .kicad_pcb/.kicad_sch/.kicad_pro/.kicad_prl tracked)
+**/Output/
+**/*-backups/
+**/fp-info-cache
+
+# Archives and exported documents/artifacts
+*.zip
+*.pdf
+*.step
+*.stp
+*.html
+
+# Hardware design trees (non-code)
+V1/
+V2/
+V3/
+V4/
