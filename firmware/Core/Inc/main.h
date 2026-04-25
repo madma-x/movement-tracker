@@ -58,16 +58,16 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
-#define RST_IMU_Pin GPIO_PIN_0
-#define RST_IMU_GPIO_Port GPIOA
+#define CS_IMU_Pin GPIO_PIN_0
+#define CS_IMU_GPIO_Port GPIOA
 #define RST_PAA_Pin GPIO_PIN_1
 #define RST_PAA_GPIO_Port GPIOA
 #define VCP_TX_Pin GPIO_PIN_2
 #define VCP_TX_GPIO_Port GPIOA
 #define VCP_RX_Pin GPIO_PIN_3
 #define VCP_RX_GPIO_Port GPIOA
-#define CS_IMU_Pin GPIO_PIN_4
-#define CS_IMU_GPIO_Port GPIOA
+#define CS_IMUA4_Pin GPIO_PIN_4
+#define CS_IMUA4_GPIO_Port GPIOA
 #define SCK_Pin GPIO_PIN_5
 #define SCK_GPIO_Port GPIOA
 #define MISO_Pin GPIO_PIN_6
