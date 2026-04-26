@@ -1,4 +1,0 @@
-../Core/Src/time.c:4:13:getCurrentTime	8	static
-../Core/Src/time.c:9:13:getElapsedTime	16	static
-../Core/Src/time.c:15:6:isTimeDeltaElapsed	16	static
-../Core/Src/time.c:20:6:waitFor	24	static

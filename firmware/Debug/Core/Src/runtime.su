@@ -1,4 +1,0 @@
-../Drivers/CMSIS/Include/core_cm4.h:1933:34:__NVIC_SystemReset	4	static,ignoring_inline_asm
-../Core/Src/runtime.c:39:6:setBnoReports	8	static
-../Core/Src/runtime.c:48:6:setup	24	static
-../Core/Src/runtime.c:72:6:loop	64	static

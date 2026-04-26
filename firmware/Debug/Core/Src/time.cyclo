@@ -1,4 +1,0 @@
-../Core/Src/time.c:4:13:getCurrentTime	1
-../Core/Src/time.c:9:13:getElapsedTime	2
-../Core/Src/time.c:15:6:isTimeDeltaElapsed	1
-../Core/Src/time.c:20:6:waitFor	2

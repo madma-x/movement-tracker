@@ -1,4 +1,0 @@
-../Drivers/CMSIS/Include/core_cm4.h:1933:34:__NVIC_SystemReset	1
-../Core/Src/runtime.c:39:6:setBnoReports	2
-../Core/Src/runtime.c:48:6:setup	5
-../Core/Src/runtime.c:72:6:loop	5
