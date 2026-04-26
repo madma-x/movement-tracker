@@ -1,5 +1,6 @@
 #include "lsm6dsv.h"
 #include "main.h"
+#include "micros.h"
 #include <math.h>
 
 /* Private functions */
@@ -143,9 +144,11 @@ int lsm6dsvInit(lsm6dsv_t *dev) {
         return -9;
     }
     
-    /* Configure SFLP ODR: 240 Hz (bits [2:0] = 100) to match accel/gyro rate */
-    if (lsm6dsvWriteReg(dev, LSM6DSV_SFLP_ODR, 0xA8) != HAL_OK) {
-        /* 0xA8 = 1010 1000 = reserved bits set correctly + SFLP_GAME_ODR[2:0] = 100 (240 Hz) */
+    /* Configure SFLP ODR.
+     * Per datasheet format: [7]=0, [6]=1, [5:3]=SFLP_GAME_ODR, [2]=0, [1]=1, [0]=1
+     * For 240 Hz, ODR bits are 100 -> 0b01100011 = 0x63.
+     */
+    if (lsm6dsvWriteReg(dev, LSM6DSV_SFLP_ODR, 0x63) != HAL_OK) {
         return -10;
     }
     

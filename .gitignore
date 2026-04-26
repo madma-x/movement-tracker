@@ -6,6 +6,13 @@
 *.bak
 *~
 
+# IDE workspace metadata (CubeIDE / Eclipse)
+**/.project
+**/.cproject
+**/.settings/
+**/*.launch
+**/.mxproject
+
 # Lock and temp artifacts
 *.lck
 *.lock

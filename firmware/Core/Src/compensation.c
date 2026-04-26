@@ -74,15 +74,16 @@ void quat_rotate_vector(quaternion_t q, float *vx, float *vy, float *vz) {
  */
 void compensate_paa_delta(float dx_mm, float dy_mm, quaternion_t q,
                           float *wx, float *wy) {
-    /* PAA sensor X/Y in sensor frame, with Z=0 (motion on surface) */
-    float vx = dx_mm;
-    float vy = dy_mm;
-    float vz = 0.0f;
-    
-    /* Rotate by quaternion */
-    quat_rotate_vector(q, &vx, &vy, &vz);
-    
-    /* Return world-frame X/Y */
-    *wx = vx;
-    *wy = vy;
+    /*
+     * For planar odometry we only want heading compensation.
+     * Using the full 3D quaternion and then discarding Z shrinks X/Y when
+     * the board has pitch/roll, which corrupts ground-plane distance.
+     */
+    float yaw = atan2f(2.0f * (q.q0 * q.q3 + q.q1 * q.q2),
+                       1.0f - 2.0f * (q.q2 * q.q2 + q.q3 * q.q3));
+    float cy = cosf(yaw);
+    float sy = sinf(yaw);
+
+    *wx = cy * dx_mm - sy * dy_mm;
+    *wy = sy * dx_mm + cy * dy_mm;
 }

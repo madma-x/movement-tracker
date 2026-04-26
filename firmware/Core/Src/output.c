@@ -67,7 +67,7 @@ int output_init(I2C_HandleTypeDef *hi2c, FDCAN_HandleTypeDef *hfdcan) {
 static int _send_i2c(const output_frame_t *frame) {
     if (_hi2c == NULL) return -1;
     
-    uint8_t data[20];
+    uint8_t data[sizeof(output_frame_t)];
     uint32_t offset = 0;
     
     /* Serialize frame: x, y, vx, vy (4 floats = 16 bytes) */
@@ -91,7 +91,7 @@ static int _send_i2c(const output_frame_t *frame) {
     offset += 2;
     
     /* Send via I2C master mode */
-    return HAL_I2C_Master_Transmit(_hi2c, I2C_TARGET_ADDR << 1, data, 20, I2C_TIMEOUT_MS);
+    return HAL_I2C_Master_Transmit(_hi2c, I2C_TARGET_ADDR << 1, data, sizeof(data), I2C_TIMEOUT_MS);
 }
 
 /**
@@ -113,13 +113,12 @@ static int _send_can(const output_frame_t *frame) {
     txHeader.ErrorStateIndicator = FDCAN_ESI_ACTIVE;
     txHeader.BitRateSwitch = FDCAN_BRS_OFF;
     txHeader.FDFormat = FDCAN_CLASSIC_CAN;
-    txHeader.TxEventFifoControl = FDCAN_NO_TX_EVENT_FIFO;
+    txHeader.TxEventFifoControl = FDCAN_NO_TX_EVENTS;
     
     memcpy(&txData[0], &frame->x, 4);
     memcpy(&txData[4], &frame->y, 4);
     
-    uint32_t txFifoIndex;
-    if (HAL_FDCAN_AddMessageToTxFifoQ(_hfdcan, &txHeader, txData, &txFifoIndex) != HAL_OK) {
+    if (HAL_FDCAN_AddMessageToTxFifoQ(_hfdcan, &txHeader, txData) != HAL_OK) {
         return -1;
     }
     
@@ -128,7 +127,7 @@ static int _send_can(const output_frame_t *frame) {
     memcpy(&txData[0], &frame->vx, 4);
     memcpy(&txData[4], &frame->vy, 4);
     
-    if (HAL_FDCAN_AddMessageToTxFifoQ(_hfdcan, &txHeader, txData, &txFifoIndex) != HAL_OK) {
+    if (HAL_FDCAN_AddMessageToTxFifoQ(_hfdcan, &txHeader, txData) != HAL_OK) {
         return -1;
     }
     
@@ -139,7 +138,7 @@ static int _send_can(const output_frame_t *frame) {
     memcpy(&txData[4], &frame->q2, 2);
     memcpy(&txData[6], &frame->q3, 2);
     
-    if (HAL_FDCAN_AddMessageToTxFifoQ(_hfdcan, &txHeader, txData, &txFifoIndex) != HAL_OK) {
+    if (HAL_FDCAN_AddMessageToTxFifoQ(_hfdcan, &txHeader, txData) != HAL_OK) {
         return -1;
     }
     

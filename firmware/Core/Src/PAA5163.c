@@ -248,51 +248,53 @@ static void _paaPerfOpti(paa5163_t* p){ 	// Check section 7.1.2 of PAA5160's dat
 // ================= High level ================= //
 
 paa_err_t paaInit(paa5163_t* p){
+	// 1. Power on, wait 50ms
+	HAL_Delay(50);
+
+	// 2. Drive NCS high to reset SPI
 	_deselect(p);
 
 	DWT_Init();
 
-	// Check section 7.1.1 of PAA5160's datasheet : Initialization Flow
-
+	// 3. Assert NRST low (>20us), then de-assert to reset
 	HAL_GPIO_WritePin(p->NRST_Port, p->NRST_Pin, GPIO_PIN_RESET);
-	HAL_Delay(1); // should be 20us
+	delay_us(25); // >20us
 	HAL_GPIO_WritePin(p->NRST_Port, p->NRST_Pin, GPIO_PIN_SET);
+
+	// 4. Wait 2ms
 	HAL_Delay(2);
 
-	HAL_Delay(150); // tmot-rst, being extra careful
+	// 5. Clear observation register
+	_paaWrite(p, observation, 0x00);
 
-	if(_paaRead(p, product_id) != ((~_paaRead(p, inverse_product_id)) & 0xFF)){ // check if we can communicate
-		return paa_coms;
-	}
-
+	// 6. Read observation register (expect 0xB7 or 0xBF)
 	uint8_t i = 0; uint8_t observ_read;
 	do {
 		i++;
-
-		_paaWrite(p, observation, 0x00); // clear observation register
-		HAL_Delay(1);
 		observ_read = _paaRead(p, observation);
-
 		if(i >= OBSERVATION_INIT_RETRY) return paa_observ;
 	} while(observ_read != 0xB7 && observ_read != 0xBF);
 
+	// 7. Read registers 0x02, 0x03, 0x04, 0x05, 0x06 to clear motion bit and buffers
+	_paaRead(p, 0x02); // motion
+	_paaRead(p, 0x03); // delta_x_l
+	_paaRead(p, 0x04); // delta_x_h
+	_paaRead(p, 0x05); // delta_y_l
+	_paaRead(p, 0x06); // delta_y_h
+
+	// Communication check (after clearing obs)
+	if(_paaRead(p, product_id) != ((~_paaRead(p, inverse_product_id)) & 0xFF)){
+		return paa_coms;
+	}
+
+	// Performance optimization (optional, after init)
 	_paaPerfOpti(p);
 
-	_paaRead(p, motion);
-	_paaRead(p, delta_x_l);
-	_paaRead(p, delta_x_h);
-	_paaRead(p, delta_y_l);
-	_paaRead(p, delta_y_h);
-
-	// Init done ! Now we can set values
-
-	if(p->resolution == 0) p->resolution = DEFAULT_RESOLUTION; // if value left uninitialized
+	// Init done! Now we can set values
+	if(p->resolution == 0) p->resolution = DEFAULT_RESOLUTION;
 	_paaSetResolution(p, p->resolution);
-
 	_paaSetOrientation(p, p->axis_swap, p->invert_x, p->invert_y);
-
 	p->initialized = 1;
-
 	return paa_ok;
 }
 
@@ -304,10 +306,15 @@ void paaReadMotion(paa5163_t* p){
 	uint8_t* dy8 = (uint8_t*) &(p->dy_cpi);
 
 	if(_paaMotion(p)){
-		dx8[0] = _paaRead(p, delta_x_l);
-		dx8[1] = _paaRead(p, delta_x_h);
-		dy8[0] = _paaRead(p, delta_y_l);
-		dy8[1] = _paaRead(p, delta_y_h);
+		uint8_t dx_l = _paaRead(p, delta_x_l);
+		uint8_t dx_h = _paaRead(p, delta_x_h);
+		uint8_t dy_l = _paaRead(p, delta_y_l);
+		uint8_t dy_h = _paaRead(p, delta_y_h);
+
+		dx8[0] = dx_l;
+		dx8[1] = dx_h;
+		dy8[0] = dy_l;
+		dy8[1] = dy_h;
 
 		p->x_cpi += p->dx_cpi;
 		p->y_cpi += p->dy_cpi;
@@ -315,8 +322,10 @@ void paaReadMotion(paa5163_t* p){
 		p->x = ((float) p->x_cpi * (float) IN_TO_MM) / (float) p->resolution;
 		p->y = ((float) p->y_cpi * (float) IN_TO_MM) / (float) p->resolution;
 
-		// printf("paa : dx %d, dy %d, xcpi %ld, ycpi %ld, x %.3f, y %.3f\n", p->dx_cpi, p->dy_cpi, p->x_cpi, p->y_cpi, p->x, p->y);
-		printf("paa : x %.3f\ty %.3f\n", p->x, p->y);
+		// Debug: print raw register values
+		#ifdef DEBUG_UART
+		printf("RAW dx_l=0x%02X dx_h=0x%02X dy_l=0x%02X dy_h=0x%02X\n", dx_l, dx_h, dy_l, dy_h);
+		#endif
 	}
 }
 

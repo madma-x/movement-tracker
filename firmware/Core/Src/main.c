@@ -121,7 +121,6 @@ int main(void)
   MX_USB_Device_Init();
   /* USER CODE BEGIN 2 */
   HAL_GPIO_WritePin(RST_PAA_GPIO_Port, RST_PAA_Pin, GPIO_PIN_RESET); // turn off and deselect both sensors
-  HAL_GPIO_WritePin(RST_IMU_GPIO_Port, RST_IMU_Pin, GPIO_PIN_RESET);
   HAL_GPIO_WritePin(CS_PAA_GPIO_Port, CS_PAA_Pin, GPIO_PIN_SET);
   HAL_GPIO_WritePin(CS_IMU_GPIO_Port, CS_IMU_Pin, GPIO_PIN_SET);
 
