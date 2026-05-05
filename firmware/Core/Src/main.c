@@ -251,7 +251,7 @@ static void MX_I2C2_Init(void)
   /* USER CODE END I2C2_Init 1 */
   hi2c2.Instance = I2C2;
   hi2c2.Init.Timing = 0x0090194B;
-  hi2c2.Init.OwnAddress1 = 204;
+  hi2c2.Init.OwnAddress1 = 0x84;  /* 7-bit address 0x42, shifted: 0x42 << 1 */
   hi2c2.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
   hi2c2.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
   hi2c2.Init.OwnAddress2 = 0;

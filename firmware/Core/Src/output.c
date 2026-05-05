@@ -1,173 +1,118 @@
 #include "output.h"
 #include <string.h>
-#include <math.h>
 
 static I2C_HandleTypeDef *_hi2c = NULL;
-static FDCAN_HandleTypeDef *_hfdcan = NULL;
 
-#define I2C_TARGET_ADDR  0x42  /* 7-bit address */
-#define I2C_TIMEOUT_MS   100
+static uint8_t _tx_buf[sizeof(output_frame_t)];
+static uint8_t _rx_dummy[1];
 
-/**
- * @brief Convert float32 to float16
- * Simplified: just truncate mantissa, preserve exponent and sign
- */
+/* -------------------------------------------------------------------------
+ * float16 helpers (used by runtime.c for SFLP quaternion decoding)
+ * ------------------------------------------------------------------------- */
+
 uint16_t float32_to_float16(float f) {
-    uint32_t f32 = *(uint32_t*)&f;
+    uint32_t f32;
+    memcpy(&f32, &f, 4);
     uint16_t sign = (f32 >> 31) & 0x1;
-    int32_t exp = ((f32 >> 23) & 0xFF) - 127;
+    int32_t  exp  = ((f32 >> 23) & 0xFF) - 127;
     uint32_t mant = f32 & 0x7FFFFF;
-    
-    /* Clamp exponent to float16 range [-14, 15] */
-    if (exp < -14) return 0;  /* Underflow to zero */
-    if (exp > 15) exp = 15;   /* Overflow to max */
-    
-    uint16_t exp_adj = (exp + 15) & 0x1F;
-    uint16_t mant_reduced = (mant >> 13) & 0x3FF;
-    
-    uint16_t f16 = (sign << 15) | (exp_adj << 10) | mant_reduced;
-    return f16;
+    if (exp < -14) return (uint16_t)(sign << 15);
+    if (exp > 15)  exp = 15;
+    uint16_t exp_adj  = (uint16_t)((exp + 15) & 0x1F);
+    uint16_t mant_red = (uint16_t)((mant >> 13) & 0x3FF);
+    return (uint16_t)((sign << 15) | (exp_adj << 10) | mant_red);
 }
 
-/**
- * @brief Convert float16 to float32
- */
 float float16_to_float32(uint16_t h) {
     uint32_t sign = (h >> 15) & 0x1;
-    uint32_t exp = (h >> 10) & 0x1F;
+    uint32_t exp  = (h >> 10) & 0x1F;
     uint32_t mant = h & 0x3FF;
-    
     uint32_t exp_adj = (exp - 15 + 127) & 0xFF;
-    uint32_t mant_expanded = mant << 13;
-    
-    uint32_t f32_bits = (sign << 31) | (exp_adj << 23) | mant_expanded;
-    float f = *(float*)&f32_bits;
+    uint32_t f32 = (sign << 31) | (exp_adj << 23) | (mant << 13);
+    float f;
+    memcpy(&f, &f32, 4);
     return f;
 }
 
-/**
- * @brief Initialize output module
- */
-int output_init(I2C_HandleTypeDef *hi2c, FDCAN_HandleTypeDef *hfdcan) {
+/* -------------------------------------------------------------------------
+ * I2C slave
+ * ------------------------------------------------------------------------- */
+
+void output_init(I2C_HandleTypeDef *hi2c) {
     _hi2c = hi2c;
-    _hfdcan = hfdcan;
-    
-    if (_hfdcan != NULL) {
-        /* Start CAN reception if needed */
-        HAL_FDCAN_Start(_hfdcan);
-    }
-    
-    return 0;
+    memset(_tx_buf, 0, sizeof(_tx_buf));
+    HAL_I2C_EnableListen_IT(_hi2c);
 }
 
 /**
- * @brief Send via I2C as master
- * Transmits a 20-byte frame to address 0x42
+ * @brief Call every main loop iteration.
+ * Re-arms the slave listen if the peripheral drifted back to READY.
  */
-static int _send_i2c(const output_frame_t *frame) {
-    if (_hi2c == NULL) return -1;
-    
-    uint8_t data[sizeof(output_frame_t)];
-    uint32_t offset = 0;
-    
-    /* Serialize frame: x, y, vx, vy (4 floats = 16 bytes) */
-    memcpy(&data[offset], &frame->x, 4);
-    offset += 4;
-    memcpy(&data[offset], &frame->y, 4);
-    offset += 4;
-    memcpy(&data[offset], &frame->vx, 4);
-    offset += 4;
-    memcpy(&data[offset], &frame->vy, 4);
-    offset += 4;
-    
-    /* Quaternion as 4x float16 (8 bytes) */
-    memcpy(&data[offset], &frame->q0, 2);
-    offset += 2;
-    memcpy(&data[offset], &frame->q1, 2);
-    offset += 2;
-    memcpy(&data[offset], &frame->q2, 2);
-    offset += 2;
-    memcpy(&data[offset], &frame->q3, 2);
-    offset += 2;
-    
-    /* Send via I2C master mode */
-    return HAL_I2C_Master_Transmit(_hi2c, I2C_TARGET_ADDR << 1, data, sizeof(data), I2C_TIMEOUT_MS);
+void output_process(void) {
+    if (_hi2c == NULL) return;
+    if (HAL_I2C_GetState(_hi2c) == HAL_I2C_STATE_READY) {
+        HAL_I2C_EnableListen_IT(_hi2c);
+    }
+}
+
+/* -------------------------------------------------------------------------
+ * HAL I2C slave callbacks
+ * ------------------------------------------------------------------------- */
+
+/**
+ * @brief Address-match callback: arm TX or RX depending on master direction.
+ */
+void HAL_I2C_AddrCallback(I2C_HandleTypeDef *hi2c, uint8_t TransferDirection, uint16_t AddrMatchCode)
+{
+    (void)AddrMatchCode;
+    if (hi2c != _hi2c) return;
+    if (TransferDirection == I2C_DIRECTION_RECEIVE) {
+        /* Master wants to read from us — send the motion frame */
+        HAL_I2C_Slave_Seq_Transmit_IT(hi2c, _tx_buf, sizeof(_tx_buf), I2C_LAST_FRAME);
+    } else {
+        /* Master is writing to us — absorb one byte then re-listen */
+        HAL_I2C_Slave_Seq_Receive_IT(hi2c, _rx_dummy, 1, I2C_NEXT_FRAME);
+    }
+}
+
+void HAL_I2C_SlaveTxCpltCallback(I2C_HandleTypeDef *hi2c)
+{
+    if (hi2c != _hi2c) return;
+    HAL_I2C_EnableListen_IT(hi2c);
+}
+
+void HAL_I2C_SlaveRxCpltCallback(I2C_HandleTypeDef *hi2c)
+{
+    if (hi2c != _hi2c) return;
+    HAL_I2C_EnableListen_IT(hi2c);
+}
+
+void HAL_I2C_ListenCpltCallback(I2C_HandleTypeDef *hi2c)
+{
+    if (hi2c != _hi2c) return;
+    HAL_I2C_EnableListen_IT(hi2c);
+}
+
+void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c)
+{
+    if (hi2c != _hi2c) return;
+    /* Clear any error and re-arm — AF (NACK at end of master read) is normal */
+    HAL_I2C_EnableListen_IT(hi2c);
 }
 
 /**
- * @brief Send via CAN (split into 2 frames)
- * Frame 1 (ID 0x100): x, y, vx, vy (as floats fit 2 per 8-byte frame)
- * Frame 2 (ID 0x101): q0, q1, q2, q3 (as float16, 2 per 4-byte CAN word)
+ * @brief Update the transmit buffer. Safe to call from main loop.
  */
-static int _send_can(const output_frame_t *frame) {
-    if (_hfdcan == NULL) return -1;
-    
-    FDCAN_TxHeaderTypeDef txHeader;
-    uint8_t txData[8];
-    
-    /* Frame 1: Position and velocity (2 floats = 8 bytes) */
-    txHeader.Identifier = OUTPUT_CAN_ID_POSVEL;
-    txHeader.IdType = FDCAN_STANDARD_ID;
-    txHeader.TxFrameType = FDCAN_DATA_FRAME;
-    txHeader.DataLength = FDCAN_DLC_BYTES_8;
-    txHeader.ErrorStateIndicator = FDCAN_ESI_ACTIVE;
-    txHeader.BitRateSwitch = FDCAN_BRS_OFF;
-    txHeader.FDFormat = FDCAN_CLASSIC_CAN;
-    txHeader.TxEventFifoControl = FDCAN_NO_TX_EVENTS;
-    
-    memcpy(&txData[0], &frame->x, 4);
-    memcpy(&txData[4], &frame->y, 4);
-    
-    if (HAL_FDCAN_AddMessageToTxFifoQ(_hfdcan, &txHeader, txData) != HAL_OK) {
-        return -1;
-    }
-    
-    /* Frame 2: Velocity X/Y as floats (8 bytes) */
-    txHeader.Identifier = OUTPUT_CAN_ID_POSVEL + 1;  /* Next frame for vx, vy */
-    memcpy(&txData[0], &frame->vx, 4);
-    memcpy(&txData[4], &frame->vy, 4);
-    
-    if (HAL_FDCAN_AddMessageToTxFifoQ(_hfdcan, &txHeader, txData) != HAL_OK) {
-        return -1;
-    }
-    
-    /* Frame 3: Quaternion (4x float16 = 8 bytes) */
-    txHeader.Identifier = OUTPUT_CAN_ID_ORIENT;
-    memcpy(&txData[0], &frame->q0, 2);
-    memcpy(&txData[2], &frame->q1, 2);
-    memcpy(&txData[4], &frame->q2, 2);
-    memcpy(&txData[6], &frame->q3, 2);
-    
-    if (HAL_FDCAN_AddMessageToTxFifoQ(_hfdcan, &txHeader, txData) != HAL_OK) {
-        return -1;
-    }
-    
-    return 0;
-}
-
-/**
- * @brief Send output (I2C + CAN)
- */
-int output_send(float x_mm, float y_mm, float vx_mms, float vy_mms,
-                float q0, float q1, float q2, float q3) {
+void output_send(float x_m, float y_m, float vx_ms, float vy_ms, float yaw_rad) {
     output_frame_t frame;
-    
-    frame.x = x_mm;
-    frame.y = y_mm;
-    frame.vx = vx_mms;
-    frame.vy = vy_mms;
-    frame.q0 = float32_to_float16(q0);
-    frame.q1 = float32_to_float16(q1);
-    frame.q2 = float32_to_float16(q2);
-    frame.q3 = float32_to_float16(q3);
-    
-    /* Try both, don't fail if one fails */
-    int i2c_ret = _send_i2c(&frame);
-    int can_ret = _send_can(&frame);
-    
-    if (i2c_ret != HAL_OK && can_ret != HAL_OK) {
-        return -1;  /* Both failed */
-    }
-    
-    return 0;
+    frame.x       = x_m;
+    frame.y       = y_m;
+    frame.vx      = vx_ms;
+    frame.vy      = vy_ms;
+    frame.yaw_rad = yaw_rad;
+    /* Disable IRQ briefly so the ISR never reads a half-written frame */
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    memcpy(_tx_buf, &frame, sizeof(_tx_buf));
+    __set_PRIMASK(primask);
 }

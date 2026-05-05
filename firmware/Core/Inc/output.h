@@ -4,42 +4,32 @@
 #include <stdint.h>
 #include "stm32g4xx_hal.h"
 
-/* Output frame format (20 bytes total) */
+/* Output frame: x, y, vx, vy, yaw_rad — 20 bytes, all float32 */
 typedef struct {
-    float x;         /* Position X (mm) */
-    float y;         /* Position Y (mm) */
-    float vx;        /* Velocity X (mm/s) */
-    float vy;        /* Velocity Y (mm/s) */
-    uint16_t q0;     /* Quaternion q0 as float16 */
-    uint16_t q1;     /* Quaternion q1 as float16 */
-    uint16_t q2;     /* Quaternion q2 as float16 */
-    uint16_t q3;     /* Quaternion q3 as float16 */
+    float x;         /* Position X (m) */
+    float y;         /* Position Y (m) */
+    float vx;        /* Velocity X (m/s) */
+    float vy;        /* Velocity Y (m/s) */
+    float yaw_rad;   /* SFLP yaw angle (radians) */
 } output_frame_t;
 
-/* CAN frame IDs */
-#define OUTPUT_CAN_ID_POSVEL   0x100  /* Position + Velocity frame */
-#define OUTPUT_CAN_ID_ORIENT   0x101  /* Orientation (quaternion) frame */
+/**
+ * @brief Initialize I2C slave at address 0x42 and start listening.
+ */
+void output_init(I2C_HandleTypeDef *hi2c);
 
 /**
- * @brief Initialize output drivers (I2C, CAN)
+ * @brief Call every main loop iteration to keep the slave alive.
  */
-int output_init(I2C_HandleTypeDef *hi2c, FDCAN_HandleTypeDef *hfdcan);
+void output_process(void);
 
 /**
- * @brief Send position/velocity/orientation data via I2C and CAN
+ * @brief Update the transmit buffer (non-blocking, safe to call at 50 Hz).
  */
-int output_send(float x_mm, float y_mm, float vx_mms, float vy_mms,
-                float q0, float q1, float q2, float q3);
+void output_send(float x_m, float y_m, float vx_ms, float vy_ms, float yaw_rad);
 
-/**
- * @brief Convert float32 to float16 (half precision)
- * Simplified conversion (not IEEE 754 compliant, but close enough for telemetry)
- */
+/* float16 helpers used by runtime.c */
 uint16_t float32_to_float16(float f);
-
-/**
- * @brief Convert float16 to float32
- */
-float float16_to_float32(uint16_t h);
+float    float16_to_float32(uint16_t h);
 
 #endif /* INC_OUTPUT_H_ */

@@ -14,7 +14,8 @@
 
 /* Debug output control */
 #define DEBUG_UART 1
-#define ENABLE_BUS_OUTPUT 0
+#define ENABLE_BUS_OUTPUT 1
+#define BUS_OUTPUT_PERIOD_MS 20U  /* 50 Hz */
 #define DEBUG_PRINT_PERIOD_MS 50U
 
 /* Sensor instances */
@@ -45,8 +46,14 @@ static uint32_t last_gyro_ms = 0;
 /* Integrated compensated position in mm */
 static float world_x_mm = 0.0f;
 static float world_y_mm = 0.0f;
+static float world_vx_ms = 0.0f;  /* PAA-derived velocity X (m/s) */
+static float world_vy_ms = 0.0f;  /* PAA-derived velocity Y (m/s) */
+static float accel_vx_ms = 0.0f;  /* Accel-derived velocity X (m/s) */
+static float accel_vy_ms = 0.0f;  /* Accel-derived velocity Y (m/s) */
 static int16_t last_raw_dx_cpi = 0;
 static int16_t last_raw_dy_cpi = 0;
+static float last_raw_dx_mm = 0.0f; /* Uncompensated PAA delta X (mm) */
+static float last_raw_dy_mm = 0.0f; /* Uncompensated PAA delta Y (mm) */
 
 
 void setup(void){
@@ -107,7 +114,7 @@ void setup(void){
     }
 
     /* Initialize output drivers */
-    output_init(&hi2c2, &hfdcan2);
+    output_init(&hi2c2);
 
     /* Initialize Kalman filter */
     kalman_init(&kalman);
@@ -122,6 +129,8 @@ void setup(void){
 
 void loop(void){
 	static uint32_t last_print_ms = 0;
+
+    output_process();  /* Re-arm I2C slave listen if peripheral got stuck */
 
     uint32_t now_ms = HAL_GetTick();
     uint32_t now_us = now_ms * 1000U;
@@ -147,49 +156,42 @@ void loop(void){
         while (yaw_gyro_rad > (float)M_PI) yaw_gyro_rad -= 2.0f * (float)M_PI;
         while (yaw_gyro_rad < -(float)M_PI) yaw_gyro_rad += 2.0f * (float)M_PI;
     }
-    quaternion_t yaw_q = {
-        .q0 = cosf(0.5f * yaw_gyro_rad),
-        .q1 = 0.0f,
-        .q2 = 0.0f,
-        .q3 = sinf(0.5f * yaw_gyro_rad),
-    };
-
     // Feed Kalman prediction with accel projected into yaw-compensated world XY.
     float ax_mps2 = lsm6dsv16x_from_fs4_to_mg(accel_raw[0]) * 9.80665f / 1000.0f;
     float ay_mps2 = lsm6dsv16x_from_fs4_to_mg(accel_raw[1]) * 9.80665f / 1000.0f;
+
+    // Subtract gravity projected onto sensor XY axes using SFLP quaternion (roll/pitch compensation).
+    // For a body-to-world quaternion q, gravity in sensor frame = R^T * [0,0,g]:
+    //   gx = 2*(q1*q3 - q0*q2)*g
+    //   gy = 2*(q2*q3 + q0*q1)*g
+    float grav_x = 2.0f * (imu_q.q1 * imu_q.q3 - imu_q.q0 * imu_q.q2) * 9.80665f;
+    float grav_y = 2.0f * (imu_q.q2 * imu_q.q3 + imu_q.q0 * imu_q.q1) * 9.80665f;
+    float ax_linear = ax_mps2 - grav_x;
+    float ay_linear = ay_mps2 - grav_y;
+    /* Reset velocity integrator once at 3s to discard unstable startup transient */
+    if (now_ms >= 3000U) {
+        static bool accel_v_reset_done = false;
+        if (!accel_v_reset_done) {
+            accel_vx_ms = 0.0f;
+            accel_vy_ms = 0.0f;
+            accel_v_reset_done = true;
+            if (DEBUG_UART) printf("Accel velocity reset at 3s\n");
+        }
+        accel_vx_ms += ax_linear * dt_s;
+        accel_vy_ms += ay_linear * dt_s;
+    }
     float cy = cosf(yaw_gyro_rad);
     float sy = sinf(yaw_gyro_rad);
-    float ax_world = cy * ax_mps2 - sy * ay_mps2;
-    float ay_world = sy * ax_mps2 + cy * ay_mps2;
+    float ax_world = cy * ax_linear - sy * ay_linear;
+    float ay_world = sy * ax_linear + cy * ay_linear;
     if (accel_ret != 0) {
         ax_world = 0.0f;
         ay_world = 0.0f;
     }
     kalman_predict(&kalman, ax_world, ay_world, now_us);
 
-    // Read PAA5163 motion
-    static uint32_t last_paa_read_ms = 0;
-    if (now_ms - last_paa_read_ms >= 5) { // 5ms between reads (200Hz max)
-        paaReadMotion(&paa);
 
-        // Consume the latest delta once so it is not integrated again on later loops.
-        last_raw_dx_cpi = paa.dx_cpi;
-        last_raw_dy_cpi = paa.dy_cpi;
-        dx_mm = ((float)last_raw_dx_cpi * 25.4f) / (float)paa.resolution;
-        dy_mm = ((float)last_raw_dy_cpi * 25.4f) / (float)paa.resolution;
-        compensate_paa_delta(dx_mm, dy_mm, yaw_q, &wx_mm, &wy_mm);
-        world_x_mm += wx_mm;
-        world_y_mm += wy_mm;
-
-        // Update Kalman with measured position from classic yaw-compensated odometry.
-        kalman_update_position(&kalman, world_x_mm * 1e-3f, world_y_mm * 1e-3f, dt_s);
-
-        paa.dx_cpi = 0;
-        paa.dy_cpi = 0;
-        last_paa_read_ms = now_ms;
-    }
-
-    // Get latest IMU game rotation quaternion from FIFO if available
+    // Drain FIFO first so imu_q reflects the end of the current PAA window.
     lsm6dsv16x_fifo_status_t fifo_status = {0};
     lsm6dsv16x_fifo_status_get(&lsm6_ctx, &fifo_status);
     uint16_t fifo_level = fifo_status.fifo_level;
@@ -214,9 +216,72 @@ void loop(void){
         }
     }
 
+    // Read PAA5163 motion
+    static uint32_t last_paa_read_ms = 0;
+    // Stores SFLP yaw at the end of the previous PAA window (= start of this window).
+    static quaternion_t imu_q_paa_start = {.q0 = 1.0f, .q1 = 0.0f, .q2 = 0.0f, .q3 = 0.0f};
+    if (now_ms - last_paa_read_ms >= 5) { // 5ms between reads (200Hz max)
+        float paa_dt_s = (float)(now_ms - last_paa_read_ms) * 1e-3f;
+        paaReadMotion(&paa);
+
+        // Consume the latest delta once so it is not integrated again on later loops.
+        last_raw_dx_cpi = paa.dx_cpi;  /* sensor X maps to robot Y — swap axes */
+        last_raw_dy_cpi = paa.dy_cpi;
+        dx_mm = ((float)last_raw_dx_cpi * 25.4f) / (float)paa.resolution;
+        dy_mm = ((float)last_raw_dy_cpi * 25.4f) / (float)paa.resolution;
+        last_raw_dx_mm += dx_mm;
+        last_raw_dy_mm += dy_mm;
+
+        // Midpoint heading: average SFLP yaw at window-start and window-end.
+        float yaw_start = atan2f(2.0f * (imu_q_paa_start.q0 * imu_q_paa_start.q3 + imu_q_paa_start.q1 * imu_q_paa_start.q2),
+                                  1.0f - 2.0f * (imu_q_paa_start.q2 * imu_q_paa_start.q2 + imu_q_paa_start.q3 * imu_q_paa_start.q3));
+        float yaw_end   = atan2f(2.0f * (imu_q.q0 * imu_q.q3 + imu_q.q1 * imu_q.q2),
+                                  1.0f - 2.0f * (imu_q.q2 * imu_q.q2 + imu_q.q3 * imu_q.q3));
+        float dyaw = yaw_end - yaw_start;
+        while (dyaw >  (float)M_PI) dyaw -= 2.0f * (float)M_PI;
+        while (dyaw < -(float)M_PI) dyaw += 2.0f * (float)M_PI;
+        float yaw_mid = yaw_start + 0.5f * dyaw;
+        quaternion_t mid_q = {
+            .q0 = cosf(0.5f * yaw_mid),
+            .q1 = 0.0f,
+            .q2 = 0.0f,
+            .q3 = sinf(0.5f * yaw_mid),
+        };
+        compensate_paa_delta(dx_mm, dy_mm, mid_q, &wx_mm, &wy_mm);
+        world_x_mm += wx_mm;
+        world_y_mm += wy_mm;
+
+        // Update Kalman with measured position from classic yaw-compensated odometry.
+        kalman_update_position(&kalman, world_x_mm * 1e-3f, world_y_mm * 1e-3f, paa_dt_s);
+
+        // Update Kalman velocity directly from optical flow (wx/dt, wy/dt).
+        // This is the primary fix for velocity oscillation: directly constrains vx/vy
+        // instead of relying on off-diagonal covariance terms from position updates only.
+        if (paa_dt_s > 0.001f) {
+            float vx_opt = (wx_mm * 1e-3f) / paa_dt_s;
+            float vy_opt = (wy_mm * 1e-3f) / paa_dt_s;
+            world_vx_ms = vx_opt;
+            world_vy_ms = vy_opt;
+            kalman_update_velocity(&kalman, vx_opt, vy_opt);
+        }
+
+        paa.dx_cpi = 0;
+        paa.dy_cpi = 0;
+        imu_q_paa_start = imu_q;  // save end-of-window heading for next iteration
+        last_paa_read_ms = now_ms;
+    }
+
+    float yaw_sflp_rad = atan2f(2.0f * (imu_q.q0 * imu_q.q3 + imu_q.q1 * imu_q.q2),
+                                1.0f - 2.0f * (imu_q.q2 * imu_q.q2 + imu_q.q3 * imu_q.q3));
+
     if (ENABLE_BUS_OUTPUT) {
-        output_send(world_x_mm, world_y_mm, 0.0f, 0.0f,
-                    yaw_q.q0, yaw_q.q1, yaw_q.q2, yaw_q.q3);
+        static uint32_t last_output_ms = 0;
+        if (now_ms - last_output_ms >= BUS_OUTPUT_PERIOD_MS) {
+            output_send(world_x_mm * 1e-3f, world_y_mm * 1e-3f,
+                        world_vx_ms, world_vy_ms,
+                        yaw_sflp_rad);
+            last_output_ms = now_ms;
+        }
     }
 
     if (DEBUG_UART && (now_ms - last_print_ms) >= DEBUG_PRINT_PERIOD_MS) {
@@ -225,16 +290,16 @@ void loop(void){
         float ky_mm = kstate.y * 1000.0f;
         float kvx_mms = kstate.vx * 1000.0f;
         float kvy_mms = kstate.vy * 1000.0f;
-        float yaw_sflp_rad = atan2f(2.0f * (imu_q.q0 * imu_q.q3 + imu_q.q1 * imu_q.q2),
-                                    1.0f - 2.0f * (imu_q.q2 * imu_q.q2 + imu_q.q3 * imu_q.q3));
         float yaw_sflp_deg = yaw_sflp_rad * 57.2957795f;
         float yaw_gyro_deg = yaw_gyro_rad * 57.2957795f;
-         printf("classic x:%.2f y:%.2f | kalman x:%.2f y:%.2f vx:%.2f vy:%.2f mm/s | dx:%d dy:%d | yaw_gyro:%.1f yaw_sflp:%.1f | imu r[g:%ld a:%ld] axy=(%.3f,%.3f)m/s2\r\n",
-               world_x_mm, world_y_mm,
-               kx_mm, ky_mm, kvx_mms, kvy_mms,
-               last_raw_dx_cpi, last_raw_dy_cpi,
-             yaw_gyro_deg, yaw_sflp_deg,
-             (long)gyro_ret, (long)accel_ret, ax_world, ay_world);
+        printf("classic x:%.2f y:%.2f | kalman x:%.2f y:%.2f vx:%.2f vy:%.2f m/s | bias ax:%.4f ay:%.4f | dx:%d dy:%d | raw_mm:(%.3f,%.3f) | yaw_gyro:%.1f yaw_sflp:%.1f | imu r[g:%ld a:%ld] axy=(%.3f,%.3f)m/s2\r\n",
+			world_x_mm, world_y_mm,
+			kx_mm, ky_mm, accel_vx_ms, accel_vy_ms,
+			kstate.bx, kstate.by,
+			last_raw_dx_cpi, last_raw_dy_cpi,
+            last_raw_dx_mm, last_raw_dy_mm,
+			yaw_gyro_deg, yaw_sflp_deg,
+			(long)gyro_ret, (long)accel_ret, ax_world, ay_world);
         last_print_ms = now_ms;
     }
 }
