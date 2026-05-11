@@ -30,7 +30,7 @@ else:
             "Imported module named 'serial' is not pyserial."
         )
 
-PORT = "/dev/tty.usbmodem11302"
+PORT = "/dev/tty.usbmodem1302"
 BAUD = 115200
 HISTORY = 500  # number of samples to show
 
@@ -42,8 +42,9 @@ LINE_RE = re.compile(
     r" \| bias ax:(?P<bax>[-\d.]+) ay:(?P<bay>[-\d.]+)"
     r" \| dx:(?P<dx>[-\d]+) dy:(?P<dy>[-\d]+)"
     r" \| raw_mm:\((?P<rxmm>[-\d.]+),(?P<rymm>[-\d.]+)\)"
-    r" \| raw_cpi:\((?P<rcx>[-\d]+),(?P<rcy>[-\d]+)\)"
+    r"(?: \| raw_cpi:\((?P<rcx>[-\d]+),(?P<rcy>[-\d]+)\))?"
     r" \| yaw_gyro:(?P<yg>[-\d.]+) yaw_sflp:(?P<ys>[-\d.]+)"
+    r"(?: \| gyro_xyz:\((?P<gx>[-\d.]+),(?P<gy>[-\d.]+),(?P<gz>[-\d.]+)\)dps)?"
     r" \| imu r\[g:(?P<gr>[-\d]+) a:(?P<ar>[-\d]+)\]"
     r" axy=\((?P<ax>[-\d.]+),(?P<ay>[-\d.]+)\)m/s2"
 )
@@ -85,7 +86,11 @@ def serial_reader():
             continue
         with lock:
             for k in bufs:
-                bufs[k].append(float(m.group(k)))
+                g = m.group(k)
+                if g is None:
+                    bufs[k].append(bufs[k][-1] if bufs[k] else 0.0)
+                else:
+                    bufs[k].append(float(g))
 
 # ── plot layout ───────────────────────────────────────────────────────────────
 fig, axes = plt.subplots(3, 2, figsize=(13, 9))

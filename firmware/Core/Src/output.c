@@ -103,14 +103,19 @@ void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c)
 /**
  * @brief Update the transmit buffer. Safe to call from main loop.
  */
-void output_send(float x_m, float y_m, float vx_ms, float vy_ms, float yaw_rad, float yaw_rate_rad_s) {
+void output_send(float x_m, float y_m, float vx_ms, float vy_ms,
+                 float qx, float qy, float qz, float qw,
+                 float yaw_rate_z_rad_s) {
     output_frame_t frame;
     frame.x       = x_m;
     frame.y       = y_m;
     frame.vx      = vx_ms;
     frame.vy      = vy_ms;
-    frame.yaw_rad = yaw_rad;
-    frame.yaw_rate_rad_s = yaw_rate_rad_s;
+    frame.qx      = qx;
+    frame.qy      = qy;
+    frame.qz      = qz;
+    frame.qw      = qw;
+    frame.yaw_rate_z_rad_s = yaw_rate_z_rad_s;
     /* Disable IRQ briefly so the ISR never reads a half-written frame */
     uint32_t primask = __get_PRIMASK();
     __disable_irq();

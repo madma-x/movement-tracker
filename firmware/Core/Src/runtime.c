@@ -17,8 +17,12 @@
 #define ENABLE_BUS_OUTPUT 1
 #define BUS_OUTPUT_PERIOD_MS 20U  /* 50 Hz */
 #define DEBUG_PRINT_PERIOD_MS 50U
-/* Optical distance calibration: measured 440 mm for true 500 mm => scale by 500/440 */
-#define PAA_DISTANCE_SCALE 1.0521886f
+/* Optical distance calibration: measured 96.4 mm for true 100 mm => scale by 100/96.4 */
+#define PAA_DISTANCE_SCALE 1.08056f
+/* Lever arm: distance from optical sensor to robot rotation centre (mm).
+ * Positive X = forward, positive Y = left. Set 0 if sensor is at centre. */
+#define PAA_OFFSET_X_MM  0.0f
+#define PAA_OFFSET_Y_MM  0.0f
 
 /* Sensor instances */
 paa5163_t paa = {
@@ -58,6 +62,7 @@ static int32_t raw_accum_dx_cpi = 0;
 static int32_t raw_accum_dy_cpi = 0;
 static float last_raw_dx_mm = 0.0f; /* Uncompensated PAA delta X (mm) */
 static float last_raw_dy_mm = 0.0f; /* Uncompensated PAA delta Y (mm) */
+static float gz_bias_dps = 0.0f;    /* Gyro Z bias measured at startup (dps) */
 
 
 void setup(void){
@@ -77,8 +82,8 @@ void setup(void){
     HAL_Delay(100);
     lsm6dsv16x_auto_increment_set(&lsm6_ctx, PROPERTY_ENABLE);
     lsm6dsv16x_block_data_update_set(&lsm6_ctx, PROPERTY_ENABLE);
-    lsm6dsv16x_xl_data_rate_set(&lsm6_ctx, 0x06); // 208Hz
-    lsm6dsv16x_gy_data_rate_set(&lsm6_ctx, 0x06); // 208Hz
+    lsm6dsv16x_xl_data_rate_set(&lsm6_ctx, 0x07); // 416Hz
+    lsm6dsv16x_gy_data_rate_set(&lsm6_ctx, 0x07); // 416Hz
     lsm6dsv16x_xl_mode_set(&lsm6_ctx, LSM6DSV16X_XL_HIGH_ACCURACY_ODR_MD);
     lsm6dsv16x_gy_mode_set(&lsm6_ctx, LSM6DSV16X_GY_HIGH_ACCURACY_ODR_MD); // High performance
     
@@ -124,6 +129,20 @@ void setup(void){
     /* Initialize Kalman filter */
     kalman_init(&kalman);
 
+    /* Gyro Z bias calibration: average 500 samples at rest (~2.4 s at 208 Hz) */
+    {
+        const int CAL_SAMPLES = 500;
+        double gz_sum = 0.0;
+        int16_t g_raw[3] = {0};
+        for (int i = 0; i < CAL_SAMPLES; i++) {
+            HAL_Delay(5);
+            lsm6dsv16x_angular_rate_raw_get(&lsm6_ctx, g_raw);
+            gz_sum += lsm6dsv16x_from_fs2000_to_mdps(g_raw[2]) / 1000.0;
+        }
+        gz_bias_dps = (float)(gz_sum / CAL_SAMPLES);
+        if (DEBUG_UART) printf("Gyro Z bias: %.4f dps\n", gz_bias_dps);
+    }
+
     if (DEBUG_UART) {
         printf("Setup complete. Starting main loop.\n");
         printf("Debug: bus output %s\n", ENABLE_BUS_OUTPUT ? "ENABLED" : "DISABLED");
@@ -153,7 +172,7 @@ void loop(void){
     accel_ret = lsm6dsv16x_acceleration_raw_get(&lsm6_ctx, accel_raw);
 
     // Integrate heading from gyro Z (robust against linear translation).
-    float gz_dps = lsm6dsv16x_from_fs2000_to_mdps(gyro_raw[2]) / 1000.0f;
+    float gz_dps = lsm6dsv16x_from_fs2000_to_mdps(gyro_raw[2]) / 1000.0f - gz_bias_dps;
     float yaw_rate_rad_s = gz_dps * ((float)M_PI / 180.0f);
     float dt_s = ((float)(now_ms - last_gyro_ms)) * 1e-3f;
     last_gyro_ms = now_ms;
@@ -201,10 +220,11 @@ void loop(void){
 
 
     // Drain FIFO first so imu_q reflects the end of the current PAA window.
+    // fifo_level is not a count of complete tagged samples, so refresh status
+    // each iteration and stop only when the FIFO reports empty.
     lsm6dsv16x_fifo_status_t fifo_status = {0};
     lsm6dsv16x_fifo_status_get(&lsm6_ctx, &fifo_status);
-    uint16_t fifo_level = fifo_status.fifo_level;
-    while (fifo_level--) {
+    while (fifo_status.fifo_level > 0U) {
         lsm6dsv16x_fifo_out_raw_t fifo_raw = {0};
         if (lsm6dsv16x_fifo_out_raw_get(&lsm6_ctx, &fifo_raw) != 0) {
             break;
@@ -223,20 +243,21 @@ void loop(void){
             imu_q.q0 = (q0_sq > 0.0f) ? sqrtf(q0_sq) : 0.0f;
             quat_normalize(&imu_q);
         }
+
+        lsm6dsv16x_fifo_status_get(&lsm6_ctx, &fifo_status);
     }
 
     // Read PAA5163 motion
     static uint32_t last_paa_read_ms = 0;
-    // Stores SFLP yaw at the end of the previous PAA window (= start of this window).
-    static quaternion_t imu_q_paa_start = {.q0 = 1.0f, .q1 = 0.0f, .q2 = 0.0f, .q3 = 0.0f};
+    /* Step 1+5: gyro heading continuously integrated above; save window-start value here */
+    static float yaw_gyro_paa_start = 0.0f;
     if (now_ms - last_paa_read_ms >= 5) { // 5ms between reads (200Hz max)
         float paa_dt_s = (float)(now_ms - last_paa_read_ms) * 1e-3f;
         paaReadMotion(&paa);
 
         // Consume the latest delta once so it is not integrated again on later loops.
-        /* New mounting: sensor X → world -Y, sensor Y → world X */
-        last_raw_dx_cpi =  -paa.dy_cpi;   /* world X  = sensor Y  */
-        last_raw_dy_cpi = paa.dx_cpi;   /* world Y  = -sensor X */
+        last_raw_dx_cpi = -paa.dy_cpi;
+        last_raw_dy_cpi = paa.dx_cpi;
 
         /* Zero Velocity Update: PAA reports no motion AND gyro is below threshold */
         if (last_raw_dx_cpi == 0 && last_raw_dy_cpi == 0 && gyro_yaw_dps < 2.0f) {
@@ -249,22 +270,32 @@ void loop(void){
         last_raw_dx_mm += dx_mm;
         last_raw_dy_mm += dy_mm;
 
-        // Midpoint heading: average SFLP yaw at window-start and window-end.
-        float yaw_start = atan2f(2.0f * (imu_q_paa_start.q0 * imu_q_paa_start.q3 + imu_q_paa_start.q1 * imu_q_paa_start.q2),
-                                  1.0f - 2.0f * (imu_q_paa_start.q2 * imu_q_paa_start.q2 + imu_q_paa_start.q3 * imu_q_paa_start.q3));
-        float yaw_end   = atan2f(2.0f * (imu_q.q0 * imu_q.q3 + imu_q.q1 * imu_q.q2),
-                                  1.0f - 2.0f * (imu_q.q2 * imu_q.q2 + imu_q.q3 * imu_q.q3));
-        float dyaw = yaw_end - yaw_start;
-        while (dyaw >  (float)M_PI) dyaw -= 2.0f * (float)M_PI;
-        while (dyaw < -(float)M_PI) dyaw += 2.0f * (float)M_PI;
-        float yaw_mid = yaw_start + 0.5f * dyaw;
-        quaternion_t mid_q = {
-            .q0 = cosf(0.5f * yaw_mid),
-            .q1 = 0.0f,
-            .q2 = 0.0f,
-            .q3 = sinf(0.5f * yaw_mid),
-        };
-        compensate_paa_delta(dx_mm, dy_mm, mid_q, &wx_mm, &wy_mm);
+        /* Step 1: dtheta from gyro integrated at full IMU rate — no fusion latency */
+        float dtheta = yaw_gyro_rad - yaw_gyro_paa_start;
+        while (dtheta >  (float)M_PI) dtheta -= 2.0f * (float)M_PI;
+        while (dtheta < -(float)M_PI) dtheta += 2.0f * (float)M_PI;
+
+        /* Step 2: lever-arm correction (fake translation when sensor is off-centre) */
+        float dx_c = dx_mm + PAA_OFFSET_Y_MM * dtheta;
+        float dy_c = dy_mm - PAA_OFFSET_X_MM * dtheta;
+
+        /* Step 3: exact SE(2) rigid-body integration
+         *   A = sin(dtheta)/dtheta,  B = (1-cos(dtheta))/dtheta
+         * Taylor expansion for |dtheta| < 1e-6 avoids 0/0. */
+        float A_se2, B_se2;
+        if (fabsf(dtheta) > 1e-6f) {
+            A_se2 = sinf(dtheta) / dtheta;
+            B_se2 = (1.0f - cosf(dtheta)) / dtheta;
+        } else {
+            A_se2 = 1.0f - dtheta * dtheta * (1.0f / 6.0f);
+            B_se2 = dtheta * 0.5f;
+        }
+        float u_se2 = A_se2 * dx_c - B_se2 * dy_c;
+        float v_se2 = B_se2 * dx_c + A_se2 * dy_c;
+        float cth = cosf(yaw_gyro_paa_start);
+        float sth = sinf(yaw_gyro_paa_start);
+        wx_mm = cth * u_se2 - sth * v_se2;
+        wy_mm = sth * u_se2 + cth * v_se2;
         world_x_mm += wx_mm;
         world_y_mm += wy_mm;
 
@@ -281,7 +312,7 @@ void loop(void){
 
         paa.dx_cpi = 0;
         paa.dy_cpi = 0;
-        imu_q_paa_start = imu_q;  // save end-of-window heading for next iteration
+        yaw_gyro_paa_start = yaw_gyro_rad;  /* Step 5: save gyro heading at window end */
         last_paa_read_ms = now_ms;
     }
 
@@ -293,7 +324,8 @@ void loop(void){
         if (now_ms - last_output_ms >= BUS_OUTPUT_PERIOD_MS) {
             output_send(world_x_mm * 1e-3f, world_y_mm * 1e-3f,
                         world_vx_ms, world_vy_ms,
-                        yaw_sflp_rad, yaw_rate_rad_s);
+                        imu_q.q1, imu_q.q2, imu_q.q3, imu_q.q0,
+                        yaw_rate_rad_s);
             last_output_ms = now_ms;
         }
     }
@@ -306,7 +338,9 @@ void loop(void){
         float kvy_mms = kstate.vy * 1000.0f;
         float yaw_sflp_deg = yaw_sflp_rad * 57.2957795f;
         float yaw_gyro_deg = yaw_gyro_rad * 57.2957795f;
-        printf("classic x:%.2f y:%.2f | kalman x:%.2f y:%.2f vx:%.2f vy:%.2f mm/s | bias ax:%.4f ay:%.4f | dx:%d dy:%d | raw_mm:(%.3f,%.3f) | raw_cpi:(%ld,%ld) | yaw_gyro:%.1f yaw_sflp:%.1f | imu r[g:%ld a:%ld] axy=(%.3f,%.3f)m/s2\r\n",
+        float gx_dps = lsm6dsv16x_from_fs2000_to_mdps(gyro_raw[0]) / 1000.0f;
+        float gy_dps = lsm6dsv16x_from_fs2000_to_mdps(gyro_raw[1]) / 1000.0f;
+        printf("classic x:%.2f y:%.2f | kalman x:%.2f y:%.2f vx:%.2f vy:%.2f mm/s | bias ax:%.4f ay:%.4f | dx:%d dy:%d | raw_mm:(%.3f,%.3f) | raw_cpi:(%ld,%ld) | yaw_gyro:%.1f yaw_sflp:%.1f | gyro_xyz:(%.1f,%.1f,%.1f)dps | imu r[g:%ld a:%ld] axy=(%.3f,%.3f)m/s2\r\n",
 			world_x_mm, world_y_mm,
 			kx_mm, ky_mm, world_vx_ms, world_vy_ms,
 			kstate.bx, kstate.by,
@@ -314,6 +348,7 @@ void loop(void){
             last_raw_dx_mm, last_raw_dy_mm,
             (long)raw_accum_dx_cpi, (long)raw_accum_dy_cpi,
 			yaw_gyro_deg, yaw_sflp_deg,
+			gx_dps, gy_dps, gz_dps,
 			(long)gyro_ret, (long)accel_ret, ax_world, ay_world);
         last_print_ms = now_ms;
     }
