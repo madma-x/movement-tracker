@@ -17,10 +17,13 @@
 #define ENABLE_BUS_OUTPUT 1
 #define BUS_OUTPUT_PERIOD_MS 20U  /* 50 Hz */
 #define DEBUG_PRINT_PERIOD_MS 50U
-/* Use SFLP (GRV) yaw for optical flow/world-frame compensation to keep
- * translation and output quaternion in the same frame. Set to 0 to use
- * integrated gyro yaw instead. */
-#define USE_GRV_FOR_FLOW_COMP 1
+/* Hybrid yaw: integrate gyro continuously (low latency), then correct drift
+ * slowly toward GRV only while stationary. */
+#define USE_HYBRID_YAW 1
+#define YAW_STATIONARY_GZ_DPS_TH 2.0f
+#define YAW_BIAS_TAU_S 2.5f
+#define YAW_BIAS_MAX_STEP_RAD 0.02f
+#define YAW_BIAS_OUTLIER_REJECT_RAD 0.61f
 /* Optical distance calibration: measured 96.4 mm for true 100 mm => scale by 100/96.4 */
 #define PAA_DISTANCE_SCALE 1.08056f
 /* Lever arm: distance from optical sensor to robot rotation centre (mm).
@@ -67,6 +70,7 @@ static int32_t raw_accum_dy_cpi = 0;
 static float last_raw_dx_mm = 0.0f; /* Uncompensated PAA delta X (mm) */
 static float last_raw_dy_mm = 0.0f; /* Uncompensated PAA delta Y (mm) */
 static float gz_bias_dps = 0.0f;    /* Gyro Z bias measured at startup (dps) */
+static float yaw_bias_corr_rad = 0.0f;
 
 static float wrap_pi(float a) {
     while (a > (float)M_PI) a -= 2.0f * (float)M_PI;
@@ -259,11 +263,23 @@ void loop(void){
 
     float yaw_sflp_rad = atan2f(2.0f * (imu_q.q0 * imu_q.q3 + imu_q.q1 * imu_q.q2),
                                 1.0f - 2.0f * (imu_q.q2 * imu_q.q2 + imu_q.q3 * imu_q.q3));
-#if USE_GRV_FOR_FLOW_COMP
-    float yaw_comp_rad = wrap_pi(yaw_sflp_rad);
-#else
-    float yaw_comp_rad = yaw_gyro_rad;
+    float yaw_fused_rad = wrap_pi(yaw_gyro_rad + yaw_bias_corr_rad);
+#if USE_HYBRID_YAW
+    {
+        bool is_stationary = (last_raw_dx_cpi == 0 && last_raw_dy_cpi == 0 && gyro_yaw_dps < YAW_STATIONARY_GZ_DPS_TH);
+        if (is_stationary && dt_s > 0.0f && dt_s < 0.1f) {
+            float yaw_err = wrap_pi(yaw_sflp_rad - yaw_fused_rad);
+            if (fabsf(yaw_err) <= YAW_BIAS_OUTLIER_REJECT_RAD) {
+                float yaw_step = (dt_s / YAW_BIAS_TAU_S) * yaw_err;
+                if (yaw_step > YAW_BIAS_MAX_STEP_RAD) yaw_step = YAW_BIAS_MAX_STEP_RAD;
+                if (yaw_step < -YAW_BIAS_MAX_STEP_RAD) yaw_step = -YAW_BIAS_MAX_STEP_RAD;
+                yaw_bias_corr_rad = wrap_pi(yaw_bias_corr_rad + yaw_step);
+                yaw_fused_rad = wrap_pi(yaw_gyro_rad + yaw_bias_corr_rad);
+            }
+        }
+    }
 #endif
+    float yaw_comp_rad = yaw_fused_rad;
 
     // Read PAA5163 motion
     static uint32_t last_paa_read_ms = 0;
@@ -356,16 +372,17 @@ void loop(void){
         float kvy_mms = kstate.vy * 1000.0f;
         float yaw_sflp_deg = yaw_sflp_rad * 57.2957795f;
         float yaw_gyro_deg = yaw_gyro_rad * 57.2957795f;
+        float yaw_fused_deg = yaw_fused_rad * 57.2957795f;
         float gx_dps = lsm6dsv16x_from_fs2000_to_mdps(gyro_raw[0]) / 1000.0f;
         float gy_dps = lsm6dsv16x_from_fs2000_to_mdps(gyro_raw[1]) / 1000.0f;
-        printf("classic x:%.2f y:%.2f | kalman x:%.2f y:%.2f vx:%.2f vy:%.2f mm/s | bias ax:%.4f ay:%.4f | dx:%d dy:%d | raw_mm:(%.3f,%.3f) | raw_cpi:(%ld,%ld) | yaw_gyro:%.1f yaw_sflp:%.1f | gyro_xyz:(%.1f,%.1f,%.1f)dps | imu r[g:%ld a:%ld] axy=(%.3f,%.3f)m/s2\r\n",
+        printf("classic x:%.2f y:%.2f | kalman x:%.2f y:%.2f vx:%.2f vy:%.2f mm/s | bias ax:%.4f ay:%.4f | dx:%d dy:%d | raw_mm:(%.3f,%.3f) | raw_cpi:(%ld,%ld) | yaw_gyro:%.1f yaw_sflp:%.1f yaw_fused:%.1f | gyro_xyz:(%.1f,%.1f,%.1f)dps | imu r[g:%ld a:%ld] axy=(%.3f,%.3f)m/s2\r\n",
 			world_x_mm, world_y_mm,
 			kx_mm, ky_mm, world_vx_ms, world_vy_ms,
 			kstate.bx, kstate.by,
 			last_raw_dx_cpi, last_raw_dy_cpi,
             last_raw_dx_mm, last_raw_dy_mm,
             (long)raw_accum_dx_cpi, (long)raw_accum_dy_cpi,
-			yaw_gyro_deg, yaw_sflp_deg,
+			yaw_gyro_deg, yaw_sflp_deg, yaw_fused_deg,
 			gx_dps, gy_dps, gz_dps,
 			(long)gyro_ret, (long)accel_ret, ax_world, ay_world);
         last_print_ms = now_ms;

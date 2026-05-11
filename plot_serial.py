@@ -3,9 +3,10 @@
 Real-time serial plotter for Movement Tracker firmware.
 
 Parses lines of the form:
-  classic x:<v> y:<v> | kalman x:<v> y:<v> vx:<v> vy:<v> mm/s | bias ax:<v> ay:<v> |
-    dx:<v> dy:<v> | raw_mm:(<v>,<v>) | raw_cpi:(<v>,<v>) | yaw_gyro:<v> yaw_sflp:<v> |
-  imu r[g:<v> a:<v>] axy=(<v>,<v>)m/s2
+    classic x:<v> y:<v> | kalman x:<v> y:<v> vx:<v> vy:<v> mm/s | bias ax:<v> ay:<v> |
+        dx:<v> dy:<v> | raw_mm:(<v>,<v>) | raw_cpi:(<v>,<v>) |
+        yaw_gyro:<v> yaw_sflp:<v> [yaw_fused:<v>] |
+    imu r[g:<v> a:<v>] axy=(<v>,<v>)m/s2
 
 Usage:
   pip install pyserial matplotlib
@@ -43,7 +44,7 @@ LINE_RE = re.compile(
     r" \| dx:(?P<dx>[-\d]+) dy:(?P<dy>[-\d]+)"
     r" \| raw_mm:\((?P<rxmm>[-\d.]+),(?P<rymm>[-\d.]+)\)"
     r"(?: \| raw_cpi:\((?P<rcx>[-\d]+),(?P<rcy>[-\d]+)\))?"
-    r" \| yaw_gyro:(?P<yg>[-\d.]+) yaw_sflp:(?P<ys>[-\d.]+)"
+    r" \| yaw_gyro:(?P<yg>[-\d.]+) yaw_sflp:(?P<ys>[-\d.]+)(?: yaw_fused:(?P<yf>[-\d.]+))?"
     r"(?: \| gyro_xyz:\((?P<gx>[-\d.]+),(?P<gy>[-\d.]+),(?P<gz>[-\d.]+)\)dps)?"
     r" \| imu r\[g:(?P<gr>[-\d]+) a:(?P<ar>[-\d]+)\]"
     r" axy=\((?P<ax>[-\d.]+),(?P<ay>[-\d.]+)\)m/s2"
@@ -53,7 +54,7 @@ LINE_RE = re.compile(
 lock = threading.Lock()
 bufs = {k: collections.deque(maxlen=HISTORY) for k in [
     "cx", "cy", "kx", "ky", "kvx", "kvy", "bax", "bay",
-    "yg", "ys", "ax", "ay", "rcx", "rcy"
+    "yg", "ys", "yf", "ax", "ay", "rcx", "rcy"
 ]}
 
 def serial_reader():
@@ -173,6 +174,7 @@ def animate(_frame):
     # yaw
     ax_yaw.plot(t, snap["yg"], color=C[0], lw=0.9, label="gyro")
     ax_yaw.plot(t, snap["ys"], color=C[1], lw=0.9, label="sflp")
+    ax_yaw.plot(t, snap["yf"], color=C[2], lw=0.9, label="fused")
     ax_yaw.legend(fontsize=7)
 
     # bias
