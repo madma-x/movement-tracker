@@ -13,7 +13,7 @@
 #include <math.h>
 
 /* Debug output control */
-#define DEBUG_UART 1
+#define DEBUG_UART 0
 #define ENABLE_BUS_OUTPUT 1
 #define BUS_OUTPUT_PERIOD_MS 20U  /* 50 Hz */
 #define DEBUG_PRINT_PERIOD_MS 50U
