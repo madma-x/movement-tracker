@@ -4,7 +4,7 @@ Real-time serial plotter for Movement Tracker firmware.
 
 Parses lines of the form:
   classic x:<v> y:<v> | kalman x:<v> y:<v> vx:<v> vy:<v> mm/s | bias ax:<v> ay:<v> |
-  dx:<v> dy:<v> | raw_mm:(<v>,<v>) | yaw_gyro:<v> yaw_sflp:<v> |
+    dx:<v> dy:<v> | raw_mm:(<v>,<v>) | raw_cpi:(<v>,<v>) | yaw_gyro:<v> yaw_sflp:<v> |
   imu r[g:<v> a:<v>] axy=(<v>,<v>)m/s2
 
 Usage:
@@ -30,7 +30,7 @@ else:
             "Imported module named 'serial' is not pyserial."
         )
 
-PORT = "/dev/tty.usbmodem1303"
+PORT = "/dev/tty.usbmodem11302"
 BAUD = 115200
 HISTORY = 500  # number of samples to show
 
@@ -42,6 +42,7 @@ LINE_RE = re.compile(
     r" \| bias ax:(?P<bax>[-\d.]+) ay:(?P<bay>[-\d.]+)"
     r" \| dx:(?P<dx>[-\d]+) dy:(?P<dy>[-\d]+)"
     r" \| raw_mm:\((?P<rxmm>[-\d.]+),(?P<rymm>[-\d.]+)\)"
+    r" \| raw_cpi:\((?P<rcx>[-\d]+),(?P<rcy>[-\d]+)\)"
     r" \| yaw_gyro:(?P<yg>[-\d.]+) yaw_sflp:(?P<ys>[-\d.]+)"
     r" \| imu r\[g:(?P<gr>[-\d]+) a:(?P<ar>[-\d]+)\]"
     r" axy=\((?P<ax>[-\d.]+),(?P<ay>[-\d.]+)\)m/s2"
@@ -51,7 +52,7 @@ LINE_RE = re.compile(
 lock = threading.Lock()
 bufs = {k: collections.deque(maxlen=HISTORY) for k in [
     "cx", "cy", "kx", "ky", "kvx", "kvy", "bax", "bay",
-    "yg", "ys", "ax", "ay"
+    "yg", "ys", "ax", "ay", "rcx", "rcy"
 ]}
 
 def serial_reader():
@@ -142,6 +143,20 @@ def animate(_frame):
     ax_pos.plot(snap["kx"], snap["ky"], "o-", ms=2, lw=0.8, color=C[1], label="kalman")
     if snap["kx"]:
         ax_pos.plot(snap["kx"][-1], snap["ky"][-1], "x", ms=8, color=C[1])
+    if snap["cx"] and snap["cy"]:
+        raw_cpi_text = ""
+        if snap["rcx"] and snap["rcy"]:
+            raw_cpi_text = f"\nRaw accum CPI X: {int(snap['rcx'][-1])}\nRaw accum CPI Y: {int(snap['rcy'][-1])}"
+        ax_pos.text(
+            0.02,
+            0.98,
+            f"Compensated X: {snap['cx'][-1]:.1f} mm\\nCompensated Y: {snap['cy'][-1]:.1f} mm{raw_cpi_text}",
+            transform=ax_pos.transAxes,
+            va="top",
+            ha="left",
+            fontsize=8,
+            bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.75, "edgecolor": "0.7"},
+        )
     ax_pos.legend(fontsize=7)
 
     # velocity

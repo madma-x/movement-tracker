@@ -13,12 +13,12 @@
 #include <math.h>
 
 /* Debug output control */
-#define DEBUG_UART 0
+#define DEBUG_UART 1
 #define ENABLE_BUS_OUTPUT 1
 #define BUS_OUTPUT_PERIOD_MS 20U  /* 50 Hz */
 #define DEBUG_PRINT_PERIOD_MS 50U
-/* Optical distance calibration: measured 1.08 m for true 1.00 m => scale by 1/1.08 */
-#define PAA_DISTANCE_SCALE 0.9259259f
+/* Optical distance calibration: measured 440 mm for true 500 mm => scale by 500/440 */
+#define PAA_DISTANCE_SCALE 1.0521886f
 
 /* Sensor instances */
 paa5163_t paa = {
@@ -54,6 +54,8 @@ static float accel_vx_ms = 0.0f;  /* Accel-derived velocity X (m/s) */
 static float accel_vy_ms = 0.0f;  /* Accel-derived velocity Y (m/s) */
 static int16_t last_raw_dx_cpi = 0;
 static int16_t last_raw_dy_cpi = 0;
+static int32_t raw_accum_dx_cpi = 0;
+static int32_t raw_accum_dy_cpi = 0;
 static float last_raw_dx_mm = 0.0f; /* Uncompensated PAA delta X (mm) */
 static float last_raw_dy_mm = 0.0f; /* Uncompensated PAA delta Y (mm) */
 
@@ -242,6 +244,8 @@ void loop(void){
         }
         dx_mm = (((float)last_raw_dx_cpi * 25.4f) / (float)paa.resolution) * PAA_DISTANCE_SCALE;
         dy_mm = (((float)last_raw_dy_cpi * 25.4f) / (float)paa.resolution) * PAA_DISTANCE_SCALE;
+        raw_accum_dx_cpi += last_raw_dx_cpi;
+        raw_accum_dy_cpi += last_raw_dy_cpi;
         last_raw_dx_mm += dx_mm;
         last_raw_dy_mm += dy_mm;
 
@@ -302,12 +306,13 @@ void loop(void){
         float kvy_mms = kstate.vy * 1000.0f;
         float yaw_sflp_deg = yaw_sflp_rad * 57.2957795f;
         float yaw_gyro_deg = yaw_gyro_rad * 57.2957795f;
-        printf("classic x:%.2f y:%.2f | kalman x:%.2f y:%.2f vx:%.2f vy:%.2f mm/s | bias ax:%.4f ay:%.4f | dx:%d dy:%d | raw_mm:(%.3f,%.3f) | yaw_gyro:%.1f yaw_sflp:%.1f | imu r[g:%ld a:%ld] axy=(%.3f,%.3f)m/s2\r\n",
+        printf("classic x:%.2f y:%.2f | kalman x:%.2f y:%.2f vx:%.2f vy:%.2f mm/s | bias ax:%.4f ay:%.4f | dx:%d dy:%d | raw_mm:(%.3f,%.3f) | raw_cpi:(%ld,%ld) | yaw_gyro:%.1f yaw_sflp:%.1f | imu r[g:%ld a:%ld] axy=(%.3f,%.3f)m/s2\r\n",
 			world_x_mm, world_y_mm,
 			kx_mm, ky_mm, world_vx_ms, world_vy_ms,
 			kstate.bx, kstate.by,
 			last_raw_dx_cpi, last_raw_dy_cpi,
             last_raw_dx_mm, last_raw_dy_mm,
+            (long)raw_accum_dx_cpi, (long)raw_accum_dy_cpi,
 			yaw_gyro_deg, yaw_sflp_deg,
 			(long)gyro_ret, (long)accel_ret, ax_world, ay_world);
         last_print_ms = now_ms;
