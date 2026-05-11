@@ -30,7 +30,7 @@ else:
             "Imported module named 'serial' is not pyserial."
         )
 
-PORT = "/dev/tty.usbmodem1302"
+PORT = "/dev/tty.usbmodem11202"
 BAUD = 115200
 HISTORY = 500  # number of samples to show
 
