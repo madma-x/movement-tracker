@@ -4,13 +4,14 @@
 #include <stdint.h>
 #include "stm32g4xx_hal.h"
 
-/* Output frame: x, y, vx, vy, yaw_rad — 20 bytes, all float32 */
+/* Output frame: x, y, vx, vy, yaw_rad, yaw_rate_rad_s — 24 bytes, all float32 */
 typedef struct {
     float x;         /* Position X (m) */
     float y;         /* Position Y (m) */
     float vx;        /* Velocity X (m/s) */
     float vy;        /* Velocity Y (m/s) */
     float yaw_rad;   /* SFLP yaw angle (radians) */
+    float yaw_rate_rad_s; /* Yaw angular speed (rad/s) */
 } output_frame_t;
 
 /**
@@ -26,7 +27,7 @@ void output_process(void);
 /**
  * @brief Update the transmit buffer (non-blocking, safe to call at 50 Hz).
  */
-void output_send(float x_m, float y_m, float vx_ms, float vy_ms, float yaw_rad);
+void output_send(float x_m, float y_m, float vx_ms, float vy_ms, float yaw_rad, float yaw_rate_rad_s);
 
 /* float16 helpers used by runtime.c */
 uint16_t float32_to_float16(float f);

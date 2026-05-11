@@ -24,7 +24,12 @@ static void mat6x6_add(const float *a, const float *b, float *result) {
 static void mat2x2_inv(float *m, float *inv) {
     /* 2x2 inverse: [[a,b],[c,d]] -> det = ad-bc */
     float det = m[0]*m[3] - m[1]*m[2];
-    if (fabs(det) < 1e-8f) return;
+    if (fabs(det) < 1e-8f) {
+        /* Near-singular: zero output to avoid NaN propagation */
+        inv[0] = 0.0f; inv[1] = 0.0f;
+        inv[2] = 0.0f; inv[3] = 0.0f;
+        return;
+    }
     
     inv[0] = m[3] / det;
     inv[1] = -m[1] / det;
@@ -49,8 +54,8 @@ void kalman_init(kalman_filter_t *kf) {
     kf->cov.data[7] = 10.0f;    /* y variance */
     kf->cov.data[14] = 10.0f;   /* vx variance */
     kf->cov.data[21] = 10.0f;   /* vy variance */
-    kf->cov.data[28] = 0.5f;    /* bx variance */
-    kf->cov.data[35] = 0.5f;    /* by variance */
+    kf->cov.data[28] = 1.0f;    /* bx variance – higher = faster initial bias convergence */
+    kf->cov.data[35] = 1.0f;    /* by variance */
     
     kf->last_update_us = 0;
 }
@@ -66,6 +71,12 @@ void kalman_init(kalman_filter_t *kf) {
  *           by(k+1) = by(k)
  */
 void kalman_predict(kalman_filter_t *kf, float ax, float ay, uint32_t now_us) {
+    /* First call: establish time baseline without integrating accel into state. */
+    if (kf->last_update_us == 0U) {
+        kf->last_update_us = now_us;
+        return;
+    }
+
     float dt = (now_us - kf->last_update_us) * 1e-6f;  /* Convert us to seconds */
     if (dt > 1.0f) dt = 1.0f;  /* Cap dt to 1 second */
     if (dt < 0.0f) return;     /* Ignore negative dt */
@@ -238,6 +249,80 @@ void kalman_update_velocity(kalman_filter_t *kf, float vx, float vy) {
     }
 
     /* State update */
+    kf->state.x  += K[0]  * innov_vx + K[1]  * innov_vy;
+    kf->state.y  += K[2]  * innov_vx + K[3]  * innov_vy;
+    kf->state.vx += K[4]  * innov_vx + K[5]  * innov_vy;
+    kf->state.vy += K[6]  * innov_vx + K[7]  * innov_vy;
+    kf->state.bx += K[8]  * innov_vx + K[9]  * innov_vy;
+    kf->state.by += K[10] * innov_vx + K[11] * innov_vy;
+
+    /* Covariance update – Joseph form */
+    float I_KH[36];
+    memset(I_KH, 0, sizeof(I_KH));
+    for (int i = 0; i < 6; i++) {
+        I_KH[i*6+i] = 1.0f;
+        I_KH[i*6+2] -= K[i*2 + 0];
+        I_KH[i*6+3] -= K[i*2 + 1];
+    }
+
+    float IKH_P[36];
+    mat6x6_mult(I_KH, kf->cov.data, IKH_P);
+
+    float I_KH_t[36];
+    for (int i = 0; i < 6; i++) {
+        for (int j = 0; j < 6; j++) {
+            I_KH_t[i*6+j] = I_KH[j*6+i];
+        }
+    }
+    float P_new[36];
+    mat6x6_mult(IKH_P, I_KH_t, P_new);
+
+    float KR[12];
+    for (int i = 0; i < 6; i++) {
+        KR[i*2 + 0] = K[i*2+0]*R[0] + K[i*2+1]*R[2];
+        KR[i*2 + 1] = K[i*2+0]*R[1] + K[i*2+1]*R[3];
+    }
+    for (int i = 0; i < 6; i++) {
+        for (int j = 0; j < 6; j++) {
+            P_new[i*6+j] += KR[i*2+0]*K[j*2+0] + KR[i*2+1]*K[j*2+1];
+        }
+    }
+
+    memcpy(kf->cov.data, P_new, sizeof(P_new));
+}
+
+/**
+ * @brief Zero Velocity Update (ZUPT).
+ * Injects zero velocity with very low noise (KALMAN_R_ZUPT) to rapidly drive
+ * the bias states to convergence when the device is stationary.
+ */
+void kalman_zupt(kalman_filter_t *kf) {
+    float R[4] = {
+        KALMAN_R_ZUPT, 0,
+        0,             KALMAN_R_ZUPT
+    };
+
+    /* Innovation: 0 - v (we expect zero velocity) */
+    float innov_vx = -kf->state.vx;
+    float innov_vy = -kf->state.vy;
+
+    /* S = H_vel * P * H_vel^T + R (rows/cols 2,3 of P) */
+    float S[4] = {
+        kf->cov.data[2*6+2] + R[0], kf->cov.data[2*6+3],
+        kf->cov.data[3*6+2],        kf->cov.data[3*6+3] + R[3]
+    };
+
+    float S_inv[4];
+    mat2x2_inv(S, S_inv);
+
+    float K[12];
+    for (int i = 0; i < 6; i++) {
+        float p0 = kf->cov.data[i*6 + 2];
+        float p1 = kf->cov.data[i*6 + 3];
+        K[i*2 + 0] = p0 * S_inv[0] + p1 * S_inv[2];
+        K[i*2 + 1] = p0 * S_inv[1] + p1 * S_inv[3];
+    }
+
     kf->state.x  += K[0]  * innov_vx + K[1]  * innov_vy;
     kf->state.y  += K[2]  * innov_vx + K[3]  * innov_vy;
     kf->state.vx += K[4]  * innov_vx + K[5]  * innov_vy;

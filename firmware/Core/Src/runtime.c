@@ -13,10 +13,12 @@
 #include <math.h>
 
 /* Debug output control */
-#define DEBUG_UART 1
+#define DEBUG_UART 0
 #define ENABLE_BUS_OUTPUT 1
 #define BUS_OUTPUT_PERIOD_MS 20U  /* 50 Hz */
 #define DEBUG_PRINT_PERIOD_MS 50U
+/* Optical distance calibration: measured 1.08 m for true 1.00 m => scale by 1/1.08 */
+#define PAA_DISTANCE_SCALE 0.9259259f
 
 /* Sensor instances */
 paa5163_t paa = {
@@ -75,14 +77,15 @@ void setup(void){
     lsm6dsv16x_block_data_update_set(&lsm6_ctx, PROPERTY_ENABLE);
     lsm6dsv16x_xl_data_rate_set(&lsm6_ctx, 0x06); // 208Hz
     lsm6dsv16x_gy_data_rate_set(&lsm6_ctx, 0x06); // 208Hz
-    lsm6dsv16x_xl_mode_set(&lsm6_ctx, 0x01); // High performance
-    lsm6dsv16x_gy_mode_set(&lsm6_ctx, 0x01); // High performance
+    lsm6dsv16x_xl_mode_set(&lsm6_ctx, LSM6DSV16X_XL_HIGH_ACCURACY_ODR_MD);
+    lsm6dsv16x_gy_mode_set(&lsm6_ctx, LSM6DSV16X_GY_HIGH_ACCURACY_ODR_MD); // High performance
+    
     // Set full scale with official API to match conversion helpers.
     lsm6dsv16x_xl_full_scale_set(&lsm6_ctx, LSM6DSV16X_4g);
     lsm6dsv16x_gy_full_scale_set(&lsm6_ctx, LSM6DSV16X_2000dps);
 
     // Enable SFLP game rotation vector and batch it in FIFO
-    lsm6dsv16x_sflp_data_rate_set(&lsm6_ctx, LSM6DSV16X_SFLP_120Hz);
+    lsm6dsv16x_sflp_data_rate_set(&lsm6_ctx, 0x06);
     lsm6dsv16x_sflp_game_rotation_set(&lsm6_ctx, PROPERTY_ENABLE);
     lsm6dsv16x_fifo_sflp_raw_t sflp_fifo_cfg = {0};
     sflp_fifo_cfg.game_rotation = 1;
@@ -149,6 +152,7 @@ void loop(void){
 
     // Integrate heading from gyro Z (robust against linear translation).
     float gz_dps = lsm6dsv16x_from_fs2000_to_mdps(gyro_raw[2]) / 1000.0f;
+    float yaw_rate_rad_s = gz_dps * ((float)M_PI / 180.0f);
     float dt_s = ((float)(now_ms - last_gyro_ms)) * 1e-3f;
     last_gyro_ms = now_ms;
     if (dt_s > 0.0f && dt_s < 0.1f) {
@@ -190,6 +194,9 @@ void loop(void){
     }
     kalman_predict(&kalman, ax_world, ay_world, now_us);
 
+    /* Use gz_dps (already computed) for ZUPT rotation check */
+    float gyro_yaw_dps = fabsf(gz_dps);
+
 
     // Drain FIFO first so imu_q reflects the end of the current PAA window.
     lsm6dsv16x_fifo_status_t fifo_status = {0};
@@ -225,10 +232,16 @@ void loop(void){
         paaReadMotion(&paa);
 
         // Consume the latest delta once so it is not integrated again on later loops.
-        last_raw_dx_cpi = paa.dx_cpi;  /* sensor X maps to robot Y — swap axes */
-        last_raw_dy_cpi = paa.dy_cpi;
-        dx_mm = ((float)last_raw_dx_cpi * 25.4f) / (float)paa.resolution;
-        dy_mm = ((float)last_raw_dy_cpi * 25.4f) / (float)paa.resolution;
+        /* New mounting: sensor X → world -Y, sensor Y → world X */
+        last_raw_dx_cpi =  -paa.dy_cpi;   /* world X  = sensor Y  */
+        last_raw_dy_cpi = paa.dx_cpi;   /* world Y  = -sensor X */
+
+        /* Zero Velocity Update: PAA reports no motion AND gyro is below threshold */
+        if (last_raw_dx_cpi == 0 && last_raw_dy_cpi == 0 && gyro_yaw_dps < 2.0f) {
+            kalman_zupt(&kalman);
+        }
+        dx_mm = (((float)last_raw_dx_cpi * 25.4f) / (float)paa.resolution) * PAA_DISTANCE_SCALE;
+        dy_mm = (((float)last_raw_dy_cpi * 25.4f) / (float)paa.resolution) * PAA_DISTANCE_SCALE;
         last_raw_dx_mm += dx_mm;
         last_raw_dy_mm += dy_mm;
 
@@ -251,18 +264,15 @@ void loop(void){
         world_x_mm += wx_mm;
         world_y_mm += wy_mm;
 
-        // Update Kalman with measured position from classic yaw-compensated odometry.
-        kalman_update_position(&kalman, world_x_mm * 1e-3f, world_y_mm * 1e-3f, paa_dt_s);
-
-        // Update Kalman velocity directly from optical flow (wx/dt, wy/dt).
-        // This is the primary fix for velocity oscillation: directly constrains vx/vy
-        // instead of relying on off-diagonal covariance terms from position updates only.
+        /* Measure velocity from compensated PAA optical flow in world frame */
         if (paa_dt_s > 0.001f) {
-            float vx_opt = (wx_mm * 1e-3f) / paa_dt_s;
-            float vy_opt = (wy_mm * 1e-3f) / paa_dt_s;
-            world_vx_ms = vx_opt;
-            world_vy_ms = vy_opt;
-            kalman_update_velocity(&kalman, vx_opt, vy_opt);
+            float vx_meas = (wx_mm * 1e-3f) / paa_dt_s;
+            float vy_meas = (wy_mm * 1e-3f) / paa_dt_s;
+            world_vx_ms = vx_meas;
+            world_vy_ms = vy_meas;
+            
+            /* Kalman: use compensated PAA velocity as measurement only (no position) */
+            kalman_update_velocity(&kalman, vx_meas, vy_meas);
         }
 
         paa.dx_cpi = 0;
@@ -279,7 +289,7 @@ void loop(void){
         if (now_ms - last_output_ms >= BUS_OUTPUT_PERIOD_MS) {
             output_send(world_x_mm * 1e-3f, world_y_mm * 1e-3f,
                         world_vx_ms, world_vy_ms,
-                        yaw_sflp_rad);
+                        yaw_sflp_rad, yaw_rate_rad_s);
             last_output_ms = now_ms;
         }
     }
@@ -292,9 +302,9 @@ void loop(void){
         float kvy_mms = kstate.vy * 1000.0f;
         float yaw_sflp_deg = yaw_sflp_rad * 57.2957795f;
         float yaw_gyro_deg = yaw_gyro_rad * 57.2957795f;
-        printf("classic x:%.2f y:%.2f | kalman x:%.2f y:%.2f vx:%.2f vy:%.2f m/s | bias ax:%.4f ay:%.4f | dx:%d dy:%d | raw_mm:(%.3f,%.3f) | yaw_gyro:%.1f yaw_sflp:%.1f | imu r[g:%ld a:%ld] axy=(%.3f,%.3f)m/s2\r\n",
+        printf("classic x:%.2f y:%.2f | kalman x:%.2f y:%.2f vx:%.2f vy:%.2f mm/s | bias ax:%.4f ay:%.4f | dx:%d dy:%d | raw_mm:(%.3f,%.3f) | yaw_gyro:%.1f yaw_sflp:%.1f | imu r[g:%ld a:%ld] axy=(%.3f,%.3f)m/s2\r\n",
 			world_x_mm, world_y_mm,
-			kx_mm, ky_mm, accel_vx_ms, accel_vy_ms,
+			kx_mm, ky_mm, world_vx_ms, world_vy_ms,
 			kstate.bx, kstate.by,
 			last_raw_dx_cpi, last_raw_dy_cpi,
             last_raw_dx_mm, last_raw_dy_mm,

@@ -4,11 +4,12 @@
 #include <stdint.h>
 
 /* Tuning parameters for Kalman filter */
-#define KALMAN_Q_POS   1e-4f   /* Process noise for position (m^2) */
-#define KALMAN_Q_VEL   2e-6f   /* Process noise for velocity (m^2/s^2) – lower = less oscillation */
-#define KALMAN_Q_BIAS  1e-5f   /* Process noise for accel bias (m^2/s^4) – slow drift */
-#define KALMAN_R_POS   0.1f   /* Measurement noise for position (m^2) – larger = smoother velocity */
-#define KALMAN_R_VEL   0.05f   /* Measurement noise for velocity (m^2/s^2) */
+#define KALMAN_Q_POS   1e-2f   /* Process noise for position (m^2) */
+#define KALMAN_Q_VEL   5e-2f   /* Process noise for velocity (m^2/s^2) – allows accel to drive velocity */
+#define KALMAN_Q_BIAS  5e-3f   /* Process noise for accel bias (m^2/s^4) – faster bias estimation */
+#define KALMAN_R_POS   0.1f    /* Measurement noise for position (m^2) – unused but kept */
+#define KALMAN_R_VEL   5e-3f   /* Measurement noise for velocity (m^2/s^2) – trust PAA more */
+#define KALMAN_R_ZUPT  1e-5f   /* Zero-velocity update noise – confident when stationary (~31mm/s std dev) */
 #define KALMAN_GRAVITY 9.81f   /* Gravitational acceleration (m/s^2) */
 
 /* State: [x, y, vx, vy, bx, by] in meters, m/s, and m/s^2 */
@@ -63,6 +64,12 @@ void kalman_update_position(kalman_filter_t *kf, float z_x, float z_y, float dt)
  * @param vx, vy: Measured velocity (m/s) in world frame
  */
 void kalman_update_velocity(kalman_filter_t *kf, float vx, float vy);
+
+/**
+ * @brief Zero Velocity Update (ZUPT): inject zero velocity with very low noise.
+ * Call when the device is detected to be stationary. Forces rapid bias convergence.
+ */
+void kalman_zupt(kalman_filter_t *kf);
 
 /**
  * @brief Get current state
