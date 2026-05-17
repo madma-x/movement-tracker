@@ -264,16 +264,37 @@ paa_err_t paaInit(paa5163_t* p){
 	// 4. Wait 2ms
 	HAL_Delay(2);
 
-	// 5. Clear observation register
-	_paaWrite(p, observation, 0x00);
+	// 5-6. Clear and read observation register with retry and reset capability
+	for (uint8_t obs_attempt = 0; obs_attempt < 2; obs_attempt++) {
+		_paaWrite(p, observation, 0x00);
+		uint8_t i = 0;
+		uint8_t observ_read;
+		bool obs_ok = false;
 
-	// 6. Read observation register (expect 0xB7 or 0xBF)
-	uint8_t i = 0; uint8_t observ_read;
-	do {
-		i++;
-		observ_read = _paaRead(p, observation);
-		if(i >= OBSERVATION_INIT_RETRY) return paa_observ;
-	} while(observ_read != 0xB7 && observ_read != 0xBF);
+		do {
+			i++;
+			observ_read = _paaRead(p, observation);
+			if (observ_read == 0xB7 || observ_read == 0xBF) {
+				obs_ok = true;
+				break;
+			}
+		} while (i < OBSERVATION_INIT_RETRY);
+
+		if (obs_ok) {
+			// Success! Load performance optimization immediately after observation register validates
+			_paaPerfOpti(p);
+			break;
+		} else if (obs_attempt == 0) {
+			// Failed on first attempt, reset PAA via NRST pin and retry
+			HAL_GPIO_WritePin(p->NRST_Port, p->NRST_Pin, GPIO_PIN_RESET);
+			delay_us(25);
+			HAL_GPIO_WritePin(p->NRST_Port, p->NRST_Pin, GPIO_PIN_SET);
+			HAL_Delay(2);
+		} else {
+			// Second attempt failed, return error
+			return paa_observ;
+		}
+	}
 
 	// 7. Read registers 0x02, 0x03, 0x04, 0x05, 0x06 to clear motion bit and buffers
 	_paaRead(p, 0x02); // motion
@@ -286,9 +307,6 @@ paa_err_t paaInit(paa5163_t* p){
 	if(_paaRead(p, product_id) != ((~_paaRead(p, inverse_product_id)) & 0xFF)){
 		return paa_coms;
 	}
-
-	// Performance optimization (optional, after init)
-	_paaPerfOpti(p);
 
 	// Init done! Now we can set values
 	if(p->resolution == 0) p->resolution = DEFAULT_RESOLUTION;
