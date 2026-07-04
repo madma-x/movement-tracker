@@ -1,17 +1,53 @@
 #include "output.h"
 #include "main.h"
+#include "PAA5163.h"
+#include "lsm6dsv16x_reg.h"
+#include <stdbool.h>
 #include <string.h>
 #include <stdio.h>
 
 static I2C_HandleTypeDef *_hi2c = NULL;
 
 static uint8_t _tx_buf[sizeof(output_frame_t)];
-static uint8_t _rx_cmd_buf[1];
+static uint8_t _rx_cmd_buf[2];
 static bool _reset_cmd_pending = false;
 
 /* Command register definitions */
 #define CMD_REG_RESET 0x10
 #define CMD_RESET_SENSORS 0x01
+
+extern lsm6dsv16x_ctx_t lsm6_ctx;
+extern paa5163_t paa;
+
+static void _reinit_imu(void) {
+    lsm6dsv16x_reset_set(&lsm6_ctx, 0x02);
+    HAL_Delay(100);
+    lsm6dsv16x_auto_increment_set(&lsm6_ctx, PROPERTY_ENABLE);
+    lsm6dsv16x_block_data_update_set(&lsm6_ctx, PROPERTY_ENABLE);
+    lsm6dsv16x_xl_data_rate_set(&lsm6_ctx, LSM6DSV16X_ODR_AT_120Hz);
+    lsm6dsv16x_gy_data_rate_set(&lsm6_ctx, LSM6DSV16X_ODR_AT_960Hz);
+    lsm6dsv16x_xl_mode_set(&lsm6_ctx, LSM6DSV16X_XL_HIGH_ACCURACY_ODR_MD);
+    lsm6dsv16x_gy_mode_set(&lsm6_ctx, LSM6DSV16X_GY_HIGH_ACCURACY_ODR_MD);
+    lsm6dsv16x_xl_full_scale_set(&lsm6_ctx, LSM6DSV16X_4g);
+    lsm6dsv16x_gy_full_scale_set(&lsm6_ctx, LSM6DSV16X_2000dps);
+    lsm6dsv16x_timestamp_set(&lsm6_ctx, PROPERTY_ENABLE);
+    lsm6dsv16x_fifo_timestamp_batch_set(&lsm6_ctx, LSM6DSV16X_TMSTMP_DEC_1);
+    lsm6dsv16x_sflp_data_rate_set(&lsm6_ctx, LSM6DSV16X_SFLP_120Hz);
+    lsm6dsv16x_sflp_game_rotation_set(&lsm6_ctx, PROPERTY_ENABLE);
+    lsm6dsv16x_fifo_gy_batch_set(&lsm6_ctx, LSM6DSV16X_GY_BATCHED_AT_960Hz);
+    lsm6dsv16x_fifo_sflp_raw_t sflp_fifo_cfg = {0};
+    sflp_fifo_cfg.game_rotation = 1;
+    lsm6dsv16x_fifo_sflp_batch_set(&lsm6_ctx, sflp_fifo_cfg);
+    lsm6dsv16x_fifo_mode_set(&lsm6_ctx, LSM6DSV16X_STREAM_MODE);
+
+    lsm6dsv16x_emb_func_init_a_t emb_init_a = {0};
+    lsm6dsv16x_mem_bank_set(&lsm6_ctx, LSM6DSV16X_EMBED_FUNC_MEM_BANK);
+    lsm6dsv16x_read_reg(&lsm6_ctx, LSM6DSV16X_EMB_FUNC_INIT_A, (uint8_t *)&emb_init_a, 1);
+    emb_init_a.sflp_game_init = 1;
+    lsm6dsv16x_write_reg(&lsm6_ctx, LSM6DSV16X_EMB_FUNC_INIT_A, (uint8_t *)&emb_init_a, 1);
+    lsm6dsv16x_mem_bank_set(&lsm6_ctx, LSM6DSV16X_MAIN_MEM_BANK);
+    HAL_Delay(50);
+}
 
 /* -------------------------------------------------------------------------
  * float16 helpers (used by runtime.c for SFLP quaternion decoding)
@@ -70,24 +106,9 @@ void output_process(void) {
         HAL_GPIO_WritePin(RST_PAA_GPIO_Port, RST_PAA_Pin, GPIO_PIN_SET);
         HAL_Delay(2);
         
-        /* Reset IMU via SPI soft-reset (0x02 = SW_RESET) */
-        extern lsm6dsv16x_ctx_t lsm6_ctx;
-        lsm6dsv16x_reset_set(&lsm6_ctx, 0x02);
-        HAL_Delay(100);
-        
         /* Re-initialize both sensors */
-        extern paa5163_t paa;
         paa_err_t paa_ret = paaInit(&paa);
-        
-        extern void LSM6DSV16XSensor_init(lsm6dsv16x_ctx_t *ctx);
-        lsm6dsv16x_auto_increment_set(&lsm6_ctx, PROPERTY_ENABLE);
-        lsm6dsv16x_block_data_update_set(&lsm6_ctx, PROPERTY_ENABLE);
-        lsm6dsv16x_xl_data_rate_set(&lsm6_ctx, 0x06);
-        lsm6dsv16x_gy_data_rate_set(&lsm6_ctx, 0x06);
-        lsm6dsv16x_xl_full_scale_set(&lsm6_ctx, LSM6DSV16X_4g);
-        lsm6dsv16x_gy_full_scale_set(&lsm6_ctx, LSM6DSV16X_2000dps);
-        lsm6dsv16x_sflp_data_rate_set(&lsm6_ctx, 0x06);
-        lsm6dsv16x_sflp_game_rotation_set(&lsm6_ctx, PROPERTY_ENABLE);
+        _reinit_imu();
         
         printf("Sensors reset complete. PAA: %s\n", paa_ret == paa_ok ? "OK" : "ERROR");
     }
@@ -112,8 +133,8 @@ void HAL_I2C_AddrCallback(I2C_HandleTypeDef *hi2c, uint8_t TransferDirection, ui
         /* Master wants to read from us — send the motion frame */
         HAL_I2C_Slave_Seq_Transmit_IT(hi2c, _tx_buf, sizeof(_tx_buf), I2C_LAST_FRAME);
     } else {
-        /* Master is writing to us — capture command byte */
-        HAL_I2C_Slave_Seq_Receive_IT(hi2c, _rx_cmd_buf, 1, I2C_NEXT_FRAME);
+        /* Master is writing to us — capture register + value */
+        HAL_I2C_Slave_Seq_Receive_IT(hi2c, _rx_cmd_buf, sizeof(_rx_cmd_buf), I2C_LAST_FRAME);
     }
 }
 
@@ -127,8 +148,8 @@ void HAL_I2C_SlaveRxCpltCallback(I2C_HandleTypeDef *hi2c)
 {
     if (hi2c != _hi2c) return;
     
-    /* Parse command: treat incoming byte as command code */
-    if (_rx_cmd_buf[0] == CMD_RESET_SENSORS) {
+    /* Parse command: register 0x10, value 0x01 resets both sensors. */
+    if (_rx_cmd_buf[0] == CMD_REG_RESET && _rx_cmd_buf[1] == CMD_RESET_SENSORS) {
         _reset_cmd_pending = true;
     }
     
