@@ -46,8 +46,8 @@ static inline void quat_normalize(quaternion_t *q) {
 
 /* Gyro yaw scale from turn calibration */
 #define GYRO_YAW_SCALE   0.8889f
-/* Optical distance calibration */
-#define PAA_DISTANCE_SCALE 1.08056f
+/* Optical distance calibration — re-calibrate after hardware CPI is confirmed */
+#define PAA_DISTANCE_SCALE 1.0f
 
 /* ── Sensor instances ────────────────────────────────────────────────────── */
 paa5163_t paa = {
