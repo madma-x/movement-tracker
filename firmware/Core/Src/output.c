@@ -24,9 +24,9 @@ static void _reinit_imu(void) {
     HAL_Delay(100);
     lsm6dsv16x_auto_increment_set(&lsm6_ctx, PROPERTY_ENABLE);
     lsm6dsv16x_block_data_update_set(&lsm6_ctx, PROPERTY_ENABLE);
-    lsm6dsv16x_xl_data_rate_set(&lsm6_ctx, LSM6DSV16X_ODR_AT_120Hz);
+    lsm6dsv16x_xl_data_rate_set(&lsm6_ctx, LSM6DSV16X_ODR_AT_480Hz);
     lsm6dsv16x_gy_data_rate_set(&lsm6_ctx, LSM6DSV16X_ODR_AT_960Hz);
-    lsm6dsv16x_xl_mode_set(&lsm6_ctx, LSM6DSV16X_XL_HIGH_ACCURACY_ODR_MD);
+    lsm6dsv16x_xl_mode_set(&lsm6_ctx, LSM6DSV16X_XL_HIGH_PERFORMANCE_MD);
     lsm6dsv16x_gy_mode_set(&lsm6_ctx, LSM6DSV16X_GY_HIGH_ACCURACY_ODR_MD);
     lsm6dsv16x_xl_full_scale_set(&lsm6_ctx, LSM6DSV16X_4g);
     lsm6dsv16x_gy_full_scale_set(&lsm6_ctx, LSM6DSV16X_2000dps);
