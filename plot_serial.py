@@ -39,6 +39,7 @@ LINE_RE = re.compile(
     r"\s*\|\s*gz:(?P<gz>[-\d.]+)\s+dps"
     r"\s*\|\s*dx:(?P<dx>[-\d]+)\s+dy:(?P<dy>[-\d]+)"
     r"(?:\s*\|\s*dmm:(?P<dxmm>[-\d.]+),(?P<dymm>[-\d.]+))?"
+    r"(?:\s*\|\s*res:(?P<res>\d+))?"
 )
 
 FIELDS = ["x", "y", "vx", "vy", "yaw", "sflp", "gz", "dx", "dy", "dxmm", "dymm"]
@@ -74,6 +75,9 @@ def serial_reader():
             if line:
                 print("unparsed:", line[:120])
             continue
+        res_g = m.group("res")
+        if res_g:
+            print(f"[PAA resolution: {res_g} CPI]")
         with lock:
             for k in FIELDS:
                 g = m.group(k)
@@ -96,15 +100,15 @@ C = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728"]
 
 
 def init_axes():
-    ax_pos.set_title("Position (m)")
-    ax_pos.set_xlabel("X (m)"); ax_pos.set_ylabel("Y (m)")
+    ax_pos.set_title("Position (mm)")
+    ax_pos.set_xlabel("X (mm)"); ax_pos.set_ylabel("Y (mm)")
     ax_pos.set_aspect("equal", adjustable="datalim")
 
-    ax_xy_t.set_title("X / Y vs time (m)")
-    ax_xy_t.set_ylabel("m")
+    ax_xy_t.set_title("X / Y vs time (mm)")
+    ax_xy_t.set_ylabel("mm")
 
-    ax_vel.set_title("Velocity (m/s)")
-    ax_vel.set_ylabel("m/s")
+    ax_vel.set_title("Velocity (mm/s)")
+    ax_vel.set_ylabel("mm/s")
 
     ax_yaw.set_title("Yaw (deg)")
     ax_yaw.set_ylabel("deg")
@@ -139,7 +143,7 @@ def animate(_frame):
         ax_pos.plot(snap["x"][-1], snap["y"][-1], "x", ms=8, color=C[0])
         ax_pos.text(
             0.02, 0.98,
-            f"X: {snap['x'][-1]:.3f} m\nY: {snap['y'][-1]:.3f} m",
+            f"X: {snap['x'][-1]:.1f} mm\nY: {snap['y'][-1]:.1f} mm",
             transform=ax_pos.transAxes, va="top", ha="left", fontsize=8,
             bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.75, "edgecolor": "0.7"},
         )
@@ -165,7 +169,7 @@ def animate(_frame):
     ax_gz.plot(t, snap["gz"], color=C[2], lw=0.9)
     ax_gz.axhline(0, color="k", lw=0.4, ls="--")
 
-    # Optical flow cumulative position
+    # Cumulative optical flow from per-sample dmm deltas
     cum_x = [sum(snap["dxmm"][:i+1]) for i in range(n)]
     cum_y = [sum(snap["dymm"][:i+1]) for i in range(n)]
     ax_paa.plot(t, cum_x, color=C[0], lw=0.9, label="X (mm)")
