@@ -51,12 +51,13 @@ static inline void quat_normalize(quaternion_t *q) {
 
 /* ── Sensor instances ────────────────────────────────────────────────────── */
 paa5163_t paa = {
-    .spi      = &hspi1,
-    .NCS_Port = CS_PAA_GPIO_Port,
-    .NCS_Pin  = CS_PAA_Pin,
-    .NRST_Port= RST_PAA_GPIO_Port,
-    .NRST_Pin = RST_PAA_Pin,
-    .invert_x = 1,
+    .spi        = &hspi1,
+    .NCS_Port   = CS_PAA_GPIO_Port,
+    .NCS_Pin    = CS_PAA_Pin,
+    .NRST_Port  = RST_PAA_GPIO_Port,
+    .NRST_Pin   = RST_PAA_Pin,
+    .invert_x   = 1,
+    .resolution = 200,   /* hardware default CPI — 20000 register write does not stick */
 };
 
 lsm6dsv16x_ctx_t lsm6_ctx;
